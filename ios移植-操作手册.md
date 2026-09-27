@@ -74,11 +74,11 @@ pnpm -v
 
 ## 2. 把代码弄到 Mac 上
 
-代码已经推送到你的 GitHub 仓库了。终端里执行（把地址换成你自己的仓库地址）：
+代码已经推送到你自己的 GitHub 仓库了。终端里执行：
 
 ```bash
 cd ~/Documents
-git clone <你的仓库地址> noname
+git clone https://github.com/cklsit/noname.git noname
 cd noname
 ```
 
