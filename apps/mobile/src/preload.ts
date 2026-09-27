@@ -1,5 +1,6 @@
 import { App } from "@capacitor/app";
-import { Capacitor, registerPlugin, SystemBars } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
+import { StatusBar } from "@capacitor/status-bar";
 
 import { createIosFileSystem } from "./fs/ios.js";
 import { attachFileSystemAPI } from "./fs/legacy-api.js";
@@ -23,12 +24,17 @@ const SafFs = registerPlugin<SafFsPlugin>("SafFs");
  * 旧 Cordova 端默认就是隐藏状态栏的（`show_statusbar_android` 默认 false），
  * Capacitor 端丢了 cordova-plugin-statusbar 后没有等价实现，这里补回来。
  *
- * 说明（iOS）：`SystemBars` 在 iOS 上同样可用（Capacitor 8 起合并了 status-bar 插件的能力）。
- * iOS 的状态栏是「叠加式」的，隐藏后 WebView 依然铺满，因此行为与安卓一致。
+ * 说明（版本）：这里用的是 Capacitor 6 的 `@capacitor/status-bar` 插件。
+ * Capacitor 8 把它的能力并进了核心的 `SystemBars`，本仓库为兼容
+ * Intel Mac（最高只能装 Xcode 15 / Capacitor 6）保留旧 API。
+ *
+ * 说明（iOS）：插件同样支持 iOS，hide() 之后 WebView 铺满整屏，与安卓行为一致。
+ * iOS 侧需要 Info.plist 里的 `UIViewControllerBasedStatusBarAppearance` 为 YES
+ * （Capacitor 默认模板已经满足）。
  */
 async function hideSystemBars() {
 	try {
-		await SystemBars.hide();
+		await StatusBar.hide();
 	} catch {
 		// 插件不可用（例如桌面浏览器调试）时忽略，不影响游戏启动
 	}

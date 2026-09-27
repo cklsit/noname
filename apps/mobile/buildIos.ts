@@ -8,6 +8,12 @@
  *   给出清晰提示，而不是抛一堆难懂的报错。
  * - 签名相关参数（Team ID / 描述文件 / 导出方式）通过命令行传入，不写死在仓库里。
  *
+ * 工具链要求（本仓库固定在 Capacitor 6，为的是兼容 Intel Mac）：
+ *
+ * - **Xcode 15.0+**：Capacitor 6 的要求。注意 Xcode 26+ 起 Apple 已不再支持 Intel Mac，
+ *   所以 Intel 机器请装 Xcode 15.x（最高支持 macOS Ventura 13.5+ 的那一档）。
+ * - **CocoaPods**：Capacitor 6 的 iOS 工程用 CocoaPods 管理依赖（Capacitor 8 才改用 SPM）。
+ *
  * 典型用法（在 Mac 上、仓库根目录执行）：
  *
  *   pnpm --filter @noname/mobile build:ios -- --team=XXXXXXXXXX
@@ -47,8 +53,9 @@ Options:
   --skip-web-build        Reuse the existing dist directory
   --help                  Show this message
 
-Notes:
+Requirements:
   - Must run on macOS (xcodebuild is required).
+  - Xcode 15.0+ and CocoaPods (Capacitor 6; works on Intel Macs).
   - Run "npx cap add ios" once before the first build to generate the Xcode project.
 `);
 	process.exit(0);
@@ -80,6 +87,20 @@ if (!existsSync(iosRoot)) {
 	);
 }
 
+checkCocoaPods();
+
+// Capacitor 6 用 CocoaPods 生成 App.xcworkspace；这里做一次兜底探测，
+// 万一将来换回 SPM 模板（Capacitor 8+）也能给出可读的报错而不是让 xcodebuild 抛原始错误。
+const workspacePath = resolve(iosRoot, "App/App.xcworkspace");
+if (!existsSync(workspacePath)) {
+	throw new Error(
+		`Xcode workspace not found at ${workspacePath}.\n` +
+			"该工程可能未用 CocoaPods 初始化。请在 Mac 上执行：\n" +
+			"  cd apps/mobile && npx cap add ios --packagemanager CocoaPods\n" +
+			"（或先删除 ios/ 目录再重新执行 npx cap add ios）"
+	);
+}
+
 if (args.has("--skip-web-build")) {
 	console.log("--skip-web-build is set; reusing the existing dist directory.");
 } else {
@@ -89,11 +110,14 @@ if (args.has("--skip-web-build")) {
 // sync 内部会顺带生成 dist/asset-manifest.json（iOS 目录列举依赖它）
 run("pnpm", ["sync"], mobileRoot, "Capacitor sync");
 
+// CocoaPods 依赖需要在 sync 之后重新安装（cap sync 会更新 Podfile / Podfile.lock）
+run("pod", ["install"], resolve(iosRoot, "App"), "CocoaPods install");
+
 run(
 	"xcodebuild",
 	[
 		"-workspace",
-		resolve(iosRoot, "App/App.xcworkspace"),
+		workspacePath,
 		"-scheme",
 		"App",
 		"-configuration",
@@ -158,6 +182,20 @@ function assertMacOS() {
 				"请在 Mac 上克隆本仓库后再执行该命令；Windows 上可以先把代码改完、推送到 GitHub，再到 Mac 上拉取构建。"
 		);
 	}
+}
+
+/** Capacitor 6 的 iOS 工程用 CocoaPods 管理依赖，构建前必须确保 pod 命令可用 */
+function checkCocoaPods() {
+	const result = spawnSync("pod", ["--version"], { encoding: "utf8" });
+	if (result.error || result.status !== 0) {
+		throw new Error(
+			"CocoaPods was not found. Capacitor 6 uses CocoaPods for its iOS project.\n" +
+				"安装方式（任选其一）：\n" +
+				"  sudo gem install cocoapods\n" +
+				"  brew install cocoapods"
+		);
+	}
+	console.log(`CocoaPods: ${result.stdout.trim()}`);
 }
 
 function run(command: string, commandArgs: string[], cwd: string, step: string) {
