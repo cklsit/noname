@@ -20,3 +20,9 @@ Thumbs.db
 
 # Skill for private use
 .agents/skills/*-selfuse
+
+# WorkBuddy 工作记忆（本地辅助数据，不入库）
+.workbuddy/
+
+# Capacitor 生成的 iOS 原生工程（体积大、可由 `npx cap add ios` 重新生成）
+apps/mobile/ios/
