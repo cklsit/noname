@@ -1,12 +1,56 @@
 <h1 align="center">无名杀</h1>
 
 <p align="center">
-  <a href="https://github.com/libnoname/noname/actions/workflows/build.yml"><img alt="构建状态" src="https://img.shields.io/github/actions/workflow/status/libnoname/noname/build.yml?branch=main&style=flat-square"></a>
-  <a href="https://github.com/libnoname/noname/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/libnoname/noname?display_name=tag&style=flat-square"></a>
-  <a href="https://github.com/libnoname/noname/releases"><img alt="累计下载" src="https://img.shields.io/github/downloads/libnoname/noname/total?style=flat-square"></a>
+  <a href="https://github.com/cklsit/noname/actions/workflows/build.yml"><img alt="构建状态" src="https://img.shields.io/github/actions/workflow/status/cklsit/noname/build.yml?branch=main&style=flat-square"></a>
+  <a href="https://github.com/libnoname/noname/releases/latest"><img alt="上游最新版本" src="https://img.shields.io/github/v/release/libnoname/noname?display_name=tag&style=flat-square"></a>
   <a href="https://github.com/libnoname/noname/graphs/contributors"><img alt="项目贡献者" src="https://img.shields.io/github/contributors/libnoname/noname?style=flat-square"></a>
   <a href="./LICENSE"><img alt="许可证" src="https://img.shields.io/github/license/libnoname/noname?style=flat-square"></a>
 </p>
+
+> **本仓库是 [libnoname/noname](https://github.com/libnoname/noname) 的 Fork**，版本 `v1.11.6`。
+> 相比上游，本仓库额外提供了 **iOS 平台支持** 与 **GitHub Actions 云端构建 iOS 安装包** 的能力，
+> 详见下方「本 Fork 的新增能力」。
+
+---
+
+## 📌 本 Fork 的新增能力
+
+### iOS 平台支持
+
+上游仅在安卓端提供移动端支持，本 Fork 通过 **Capacitor 6** 补齐了 iOS：
+
+- 新增 iOS 文件系统适配层（`apps/mobile/src/fs/ios.ts`），存档、扩展、导出文件全部可用
+- 双平台统一抽象（`apps/mobile/src/fs/types.ts` / `legacy-api.ts`），安卓与 iOS 共用一套回调式 API 映射
+- 解决了 iOS 沙盒的两个关键限制：
+  - `WKWebView` 的自定义 scheme **不支持目录列举** → 构建期生成 `asset-manifest.json` 模拟列目录
+  - iOS 上 `window.open` 会静默失败 → 改用 `window.location.href`
+
+### GitHub Actions 云端构建 IPA（无需 Mac）
+
+即使**没有 Mac 电脑**（或 Mac 太老装不了新版 Xcode），也能编译出 iOS 安装包：
+
+| 特性 | 说明 |
+| --- | --- |
+| 运行环境 | GitHub 免费提供的 `macos-15` 云端机器（自带 Xcode 16.x） |
+| 成本 | **公共仓库完全免费、不限分钟** |
+| 产出 | **未签名** `.ipa`，可直接交给 SideStore / AltStore 用你自己的 Apple ID 重签 |
+| 触发方式 | 仓库 Actions 页面手动触发，或推送 `ios-v*` 标签自动构建 |
+| 资源瘦身 | 可选裁掉语音与立绘，把包体从 2.8GB 压到约 337MB，以满足侧载工具的体积限制 |
+
+工作流文件：[`.github/workflows/ios-build.yml`](./.github/workflows/ios-build.yml)
+
+> 📖 **完整操作步骤（面向零基础）请阅读：[`ios移植-操作手册.md`](./ios移植-操作手册.md)**
+>
+> 手册内含两条路线的对比（云端构建 / 本地 Mac 构建）、逐步操作指引、以及体积限制、报错排查等注意事项。
+
+### 移动端构建命令
+
+```bash
+pnpm --filter @noname/mobile build:android   # 生成安卓包
+pnpm --filter @noname/mobile build:ios       # 在 Mac 上生成 iOS 包
+```
+
+---
 
 ## 项目使用约定
 
@@ -15,6 +59,20 @@
 
 1. 打包、二次分发 **请保留代码出处**：<https://github.com/libnoname/noname>
 2. 请不要用于商业用途。
+
+## 项目结构
+
+本仓库为 pnpm monorepo，主要目录如下：
+
+| 目录 | 说明 |
+| --- | --- |
+| `apps/core` | 游戏核心（`noname`，纯前端，Chromium ≥ 91 / Safari ≥ 16.4） |
+| `apps/mobile` | 移动端封装（Capacitor 6，支持 **Android + iOS**） |
+| `apps/electron` | Electron 桌面端封装 |
+| `packages` | 可复用的工具包与扩展 |
+| `scripts` | 构建与开发脚本 |
+| `docs` | 开发文档（游戏流程、技能格式、皮肤与音频指南等） |
+| `.github/workflows` | CI：构建部署、Lint、发布，以及 **iOS 云端构建** |
 
 ## 快速启动
 
@@ -36,6 +94,12 @@ pnpm install
 
 ```bash
 pnpm dev
+```
+
+### 构建
+
+```bash
+pnpm build        # 产出 dist/，可直接部署到静态服务器
 ```
 
 ---
