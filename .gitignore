@@ -26,3 +26,6 @@ Thumbs.db
 
 # Capacitor 生成的 iOS 原生工程（体积大、可由 `npx cap add ios` 重新生成）
 apps/mobile/ios/
+
+# 本地调研文档（只放本地参考，不入库）
+无名杀*.md
