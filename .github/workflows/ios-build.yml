@@ -114,22 +114,49 @@ jobs:
         # 资源裁剪放在下一步，裁剪后再用 `cap copy` 重拷一次覆盖。
         run: pnpm sync
 
-      # Capacitor 6 默认生成 apps/mobile/ios/App/App.xcworkspace，
-      # 但为避免版本差异导致路径假设失效，这里动态探测并写入环境变量供后续步骤使用。
+      # Capacitor 6 默认生成 apps/mobile/ios/App/App.xcworkspace（含 Pods）。
+      # 注意：App.xcodeproj 内部还有一个 project.xcworkspace，它**不包含 Pods**，
+      # 用它构建会报 `no such module 'Capacitor'`。所以必须显式排除 xcodeproj 内部
+      # 的那个，只取与 .xcodeproj 同级、且名字与 xcodeproj 同名的 workspace。
       - name: Locate iOS workspace
         id: ios
         working-directory: apps/mobile/ios
         run: |
-          WS=$(find . -maxdepth 3 -name "*.xcworkspace" -type d | head -n1)
+          echo "===== ios 目录结构 ====="
+          find . -maxdepth 3 \( -name "*.xcworkspace" -o -name "*.xcodeproj" -o -name "Podfile" \) | sort
+
+          # 先尝试标准路径（Capacitor 默认布局）
+          WS=""
+          for CAND in App/App.xcworkspace App.xcworkspace; do
+            if [ -d "$CAND" ]; then WS="$CAND"; break; fi
+          done
+
+          # 兜底：找与 *.xcodeproj 同级的同名 workspace，并排除 xcodeproj 内部的
           if [ -z "$WS" ]; then
-            echo "::error::找不到 .xcworkspace，ios 目录内容："
-            find . -maxdepth 3 || true
+            WS=$(find . -maxdepth 3 -type d -name "*.xcworkspace" \
+                   ! -path "*.xcodeproj/*" | head -n1)
+          fi
+
+          if [ -z "$WS" ]; then
+            echo "::error::找不到 .xcworkspace（已排除 xcodeproj 内部的那个）"
+            find . -maxdepth 4 -type d || true
             exit 1
           fi
+
+          # 归一化去掉开头的 ./ ，避免拼出 apps/mobile/ios/./App 这类路径
           PROJ_DIR=$(dirname "$WS")
+          PROJ_DIR=${PROJ_DIR#./}
           echo "workspace=$(basename "$WS")" >> "$GITHUB_OUTPUT"
           echo "app_dir=$PROJ_DIR" >> "$GITHUB_OUTPUT"
           echo "Found workspace: $WS (dir: $PROJ_DIR)"
+
+          # 安全校验：确保 workspace 目录里确实有 Podfile（即确实由 CocoaPods 管理）
+          if [ ! -f "$PROJ_DIR/Podfile" ]; then
+            echo "::error::$PROJ_DIR 下没有 Podfile，说明选错了 workspace，或 pod 未初始化。"
+            ls -la "$PROJ_DIR"
+            exit 1
+          fi
+          echo "Podfile found in $PROJ_DIR ✓"
 
       - name: Slim assets (optional)
         if: github.event_name == 'push' || inputs.slim_assets
@@ -145,12 +172,13 @@ jobs:
           #   audio/die         111M  阵亡语音（全为 mp3，整目录删）
           #   image/character   390M  武将立绘（保留 3 张 default_silhouette_*）
           DIST=../../dist
-          # 同步进 iOS 工程的资源目录（优先用探测结果，兜底再 find 一次）
-          PUBLIC=$(find ios -maxdepth 5 -type d -path "*/App/public" | head -n1)
+          # 同步进 iOS 工程的资源目录（排除 xcodeproj / Pods 内部的干扰路径）
+          PUBLIC=$(find ios -maxdepth 5 -type d -path "*/App/public" \
+                     ! -path "*.xcodeproj/*" ! -path "*/Pods/*" | head -n1)
           echo "dist=$DIST public=$PUBLIC"
           if [ -z "$PUBLIC" ]; then
             echo "::error::找不到 iOS 工程内的 public 目录，无法裁剪。"
-            find ios -maxdepth 4 -type d || true
+            find ios -maxdepth 4 -type d ! -path "*.xcodeproj/*" || true
             exit 1
           fi
           echo "===== 裁剪前 ====="
