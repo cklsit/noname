@@ -14,11 +14,26 @@
  *
  * | 方式 | 触发 | 代价 |
  * | --- | --- | --- |
- * | 批量补齐（`asset-download.ts`） | 玩家手动点「菜单 → 其它 → 更新 → 下载素材」 | 一次约 970MB，得等 |
  * | **边玩边下（本模块）** | 游戏用到谁就下谁，无需操作 | 首次遇到某武将时轻微延迟 |
+ * | 批量补齐（`asset-download.ts`） | **游戏启动后自动开始**；也可在「菜单 → 其它 → 更新 → 下载素材」里开始 / 停止 | 一次约 970MB，静默跑完 |
  *
  * 两者共用同一份下载源与写盘逻辑，文件也都落在同一个可写层，互不冲突：
  * 批量下载补齐过的文件，懒加载探测时会直接当作「本地已有」跳过。
+ *
+ * ## 优先道：批量下载给我们让路
+ *
+ * 本模块是**优先道**。每次发出需求都会通过 `noteInteractiveDemand` 登记，批量下载在
+ * 它们处理完之前会**暂停**（见 `asset-download` 的 `runDownload`），这样「打开选将框 →
+ * 立绘马上出来」不会被上万文件的队列拖住，也就是「眼看即下」：
+ *
+ * | 层级 | 触发 | 行为 |
+ * | --- | --- | --- |
+ * | 一 | 选将框 / 自由选将框（`.dialog`）里显示的武将 | 最高优先；**玩家关掉框时，还排在队里的直接丢弃** |
+ * | 二 | 本局对局中用到的武将（不在 dialog 里） | 同样优先，但不会被主动取消 |
+ * | 三 | 其余全部素材 | 交给批量下载，且要等前两级空出来 |
+ *
+ * 「玩家有没有关掉那个框」靠容器判断：`Dialog.close()` → `element.delete()` 会
+ * **先挂 `removing` 类、500ms 后才真正 `remove()`**，两个信号都算（`demandExpired`）。
  *
  * ## 为什么能「就地生效」
  *
@@ -71,7 +86,7 @@
  * 它会同时看可写层与内置资源，因此「上次已经补好」的结论天然持久。
  */
 
-import { CONTENT_SOURCES, SKIP_BASENAMES, TARGET_GROUPS, fetchAssetBytes, fileExists, isIosRuntime, recordLazyAsset, toRemotePath, writeFileAsync, type GameLike, type LibLike, type UiLike } from "./asset-download.js";
+import { CONTENT_SOURCES, SKIP_BASENAMES, TARGET_GROUPS, clearInteractiveDemand, demandExpired, fetchAssetBytes, fileExists, isIosRuntime, noteInteractiveDemand, recordLazyAsset, toRemotePath, writeFileAsync, type GameLike, type LibLike, type UiLike } from "./asset-download.js";
 
 export interface LazyAssetsOptions {
 	lib: LibLike;
@@ -89,12 +104,23 @@ export type LazyOutcome =
 	| "unavailable";
 
 export interface LazyAssetsHandle {
-	/** 请求补齐某个游戏内路径；同一个路径在一次会话里只会真正下载一次 */
-	request(path: string): Promise<LazyOutcome>;
+	/**
+	 * 请求补齐某个游戏内路径；同一个路径在一次会话里只会真正下载一次。
+	 *
+	 * @param scope 触发它的面板容器（如选将框 / 自由选将框的 `dialog`）。
+	 *              传了它，玩家关掉那个面板时这一项就会被丢弃，不算完成。
+	 */
+	request(path: string, scope?: Element | null): Promise<LazyOutcome>;
 }
 
-/** 并发上限。刻意比批量下载（6）小：开局时游戏自己也在抢带宽，别把首屏挤掉 */
-const CONCURRENCY = 3;
+/**
+ * 并发上限。
+ *
+ * 这是**优先道**：批量下载会给它让路（见 `asset-download` 的
+ * `noteInteractiveDemand` 与 `runDownload` 里的等待循环），所以不必再像以前
+ * 那样刻意压低——打开选将框时一屏几十个立绘要「眼看即下」。
+ */
+const CONCURRENCY = 5;
 
 /** 缓存击穿用的查询参数名，见文件头「一个必须处理的细节」 */
 const BUSTER_KEY = "_lazy";
@@ -228,8 +254,8 @@ export function installLazyAssets(options: LazyAssetsOptions): LazyAssetsHandle 
 	const unavailable = new Set<string>();
 	/** 正在处理的文件 → 结果，保证同一个文件不会并发下载两次 */
 	const inflight = new Map<string, Promise<LazyOutcome>>();
-	/** 待处理队列 */
-	const queue: { path: string; resolve: (outcome: LazyOutcome) => void }[] = [];
+	/** 待处理队列；`scope` 是触发它的面板（用来判断玩家是否已经离开） */
+	const queue: { path: string; scope: Element | null; resolve: (outcome: LazyOutcome) => void }[] = [];
 	/** 每个媒体元素已尝试补救的路径数，见 MAX_REPAIRS_PER_ELEMENT */
 	const repairCounts = new WeakMap<Element, Set<string>>();
 
@@ -274,11 +300,20 @@ export function installLazyAssets(options: LazyAssetsOptions): LazyAssetsHandle 
 	 * 从队列取任务填满并发位。
 	 *
 	 * 按需下载**不做任何界面提示**：这是玩游戏时发生的事，任何浮层都会挡住牌桌，
-	 * 而且素材晚几百毫秒出现本身是可以接受的。进度只写到 console，供排查用。
+	 * 而且素材晚几百毫秒出现本身是可以接受的。想「看见」进度就去「下载素材」面板。
 	 */
 	function pump(): void {
 		while (running < CONCURRENCY && queue.length > 0) {
 			const task = queue.shift()!;
+
+			// 玩家已经离开那个面板（例如退出了自由选将框）：这一项不必再下，
+			// 直接让位给队列里后面的东西。这就是「退出即停」的落点。
+			if (demandExpired(task.scope)) {
+				clearInteractiveDemand(task.path);
+				task.resolve("unavailable");
+				continue;
+			}
+
 			running++;
 
 			acquire(task.path)
@@ -288,14 +323,19 @@ export function installLazyAssets(options: LazyAssetsOptions): LazyAssetsHandle 
 				})
 				.then(outcome => task.resolve(outcome))
 				.finally(() => {
+					clearInteractiveDemand(task.path);
 					running--;
 					pump();
 				});
 		}
 	}
 
-	/** 对外（与钩子）统一的入口：同一个路径只会真正下载一次 */
-	function request(path: string): Promise<LazyOutcome> {
+	/**
+	 * 对外（与钩子）统一的入口：同一个路径只会真正下载一次。
+	 *
+	 * @param scope 触发它的面板（如选将框的 dialog）；批量下载据此为它让路
+	 */
+	function request(path: string, scope: Element | null = null): Promise<LazyOutcome> {
 		if (!isLazyPath(path)) return Promise.resolve("unavailable");
 		if (available.has(path)) return Promise.resolve("available");
 		if (unavailable.has(path)) return Promise.resolve("unavailable");
@@ -303,8 +343,12 @@ export function installLazyAssets(options: LazyAssetsOptions): LazyAssetsHandle 
 		const existing = inflight.get(path);
 		if (existing) return existing;
 
+		// 登记成「玩家正等着看」的诉求：批量下载会为它让路。
+		// 诉求会在下载结束（或面板关闭）时撤掉，见 pump()。
+		noteInteractiveDemand(path, scope);
+
 		const task = new Promise<LazyOutcome>(resolve => {
-			queue.push({ path, resolve });
+			queue.push({ path, scope, resolve });
 			pump();
 		});
 		inflight.set(path, task);
@@ -315,7 +359,7 @@ export function installLazyAssets(options: LazyAssetsOptions): LazyAssetsHandle 
 	/** 图片钩子：拿到 path 就排队，下好了再把背景重新设一次 */
 	function handleBackground(element: Element, value: unknown): void {
 		for (const path of imageCandidates(value)) {
-			void request(path).then(outcome => {
+			void request(path, scopeOf(element)).then(outcome => {
 				if (outcome === "downloaded") {
 					repaintBackground(element, value, path);
 				}
@@ -338,11 +382,26 @@ export function installLazyAssets(options: LazyAssetsOptions): LazyAssetsHandle 
 		if (tried.has(path) || tried.size >= MAX_REPAIRS_PER_ELEMENT) return;
 		tried.add(path);
 
-		void request(path).then(outcome => {
+		void request(path, scopeOf(target)).then(outcome => {
 			if (outcome === "downloaded") {
 				retryResource(target, path);
 			}
 		});
+	}
+
+	/**
+	 * 找到触发这次需求的**面板容器**（选将框 / 自由选将框）。
+	 *
+	 * 这两种框都是 `ui.create.div(".dialog")` 建出来的 `Dialog`，关闭时走
+	 * `Dialog.close()` → `element.delete()`：先挂 `removing`、500ms 后真正 `remove()`。
+	 * 所以「玩家还在不在这个面板里」可以靠这个容器判断（见 `demandExpired`）——
+	 * 一旦它开始移除，还排在队里的素材就不必再下了。
+	 *
+	 * 对局中玩家武将的立绘不在 dialog 里，会拿到 `null`：这类需求不会被主动取消，
+	 * 但它们本来也就那么几十个，下完即止。
+	 */
+	function scopeOf(element: Element): Element | null {
+		return element.closest?.(".dialog") ?? null;
 	}
 
 	/** 文件刚落盘：把原值加个查询后缀重新设一次，逼 WebView 重新请求 */
