@@ -1,38 +1,38 @@
 # 无名杀 iOS 操作手册
 
-> **这份手册覆盖三件事：把《无名杀》编译成 iOS 安装包（`.ipa`）→ 装进 iPhone → 补齐武将原画与语音。**
+> **这份手册覆盖三件事：把《无名杀》编译成 iOS 安装包（`.ipa`）→ 装进 iPhone → 补齐武将原画与语音。**  
 > 从「完全没做过」到「手机上能玩」，照着做即可；每一步都给了**验证方法**和**出错怎么办**。
 
-**本手册描述的实现位于 `feat/ios-support` 分支**（Capacitor 8 线）。附录里的源码链接都指向该分支；
+**本手册描述的实现位于 `feat/ios-support` 分支**（Capacitor 8 线）。附录里的源码链接都指向该分支；  
 若你在 `main` 上浏览，请先切到 `feat/ios-support` 再看代码。
 
 ---
 
 ## 我该看哪一节？
 
-| 你的情况 | 看这里 |
-| --- | --- |
-| 只想尽快把游戏装到 iPhone 上 | **第 0 节** → **第 3 节**（云端构建）→ **第 6 节**（安装） |
-| 有 Mac，想本地出包 / 上架 App Store | **第 4 节**（本地构建）→ **第 6 节** |
-| 装好了，但没有武将立绘 / 语音 | **第 7 节**（默认自动下，不用你操作） |
-| 出了报错 / 现象不对 | **第 10 节**（按现象查表） |
-| 想知道为什么要这么设计 | **第 1 节**（iOS 与安卓的差异） |
+| 你的情况                       | 看这里                                        |
+| -------------------------- | ------------------------------------------ |
+| 只想尽快把游戏装到 iPhone 上         | **第 0 节** → **第 3 节**（云端构建）→ **第 6 节**（安装） |
+| 有 Mac，想本地出包 / 上架 App Store | **第 4 节**（本地构建）→ **第 6 节**                 |
+| 装好了，但没有武将立绘 / 语音           | **第 7 节**（默认自动下，不用你操作）                     |
+| 出了报错 / 现象不对                | **第 10 节**（按现象查表）                          |
+| 想知道为什么要这么设计                | **第 1 节**（iOS 与安卓的差异）                      |
 
 ---
 
 ## 0. 30 秒速览
 
-| 项 | 值 |
-| --- | --- |
-| 本仓库 | `https://github.com/cklsit/noname` |
-| **构建分支** | **`feat/ios-support`**（Capacitor **8.1**，用 Swift Package Manager） |
-| 旧线，**不要**用来构建 | `main` —— 仍是 Capacitor **6.2**，且没有资源瘦身步骤、没有「边玩边下」 |
-| 产物 | **未签名** `.ipa`，约 **294 MB** |
-| 签名 | 交给 SideStore / AltStore 用**你自己的 Apple ID** 重签，无需开发者账号 |
-| 素材策略 | 包内**恒定不含**武将原画 / 技能语音 / 阵亡语音（合计约 979 MB），由游戏内「边玩边下」按需补齐 |
-| 花费 | 公共仓库的 GitHub Actions 完全免费；本地构建免费；Apple 免费账号签名可用 |
+| 项             | 值                                                                 |
+| ------------- | ----------------------------------------------------------------- |
+| 本仓库           | `https://github.com/cklsit/noname`                                |
+| **构建分支**      | **`feat/ios-support`**（Capacitor **8.1**，用 Swift Package Manager） |
+| 旧线，**不要**用来构建 | `main` —— 仍是 Capacitor **6.2**，且没有资源瘦身步骤、没有「边玩边下」                 |
+| 产物            | **未签名** `.ipa`，约 **294 MB**                                       |
+| 签名            | 交给 SideStore / AltStore 用**你自己的 Apple ID** 重签，无需开发者账号             |
+| 素材策略          | 包内**恒定不含**武将原画 / 技能语音 / 阵亡语音（合计约 979 MB），由游戏内「边玩边下」按需补齐           |
+| 花费            | 公共仓库的 GitHub Actions 完全免费；本地构建免费；Apple 免费账号签名可用                   |
 
-> ⚠️ **最容易犯的错：在 Actions 网页点 `Run workflow` 时忘记切分支。**
+> ⚠️ **最容易犯的错：在 Actions 网页点 `Run workflow` 时忘记切分支。**  
 > 默认跑的是 `main`（旧线），出来的包和预期完全不同。**必须手动把分支切成 `feat/ios-support`**（见 3.2）。
 
 ---
@@ -43,57 +43,57 @@
 
 ### 1.1 文件系统：iOS 是沙盒，不需要「选目录」
 
-| | Android | iOS |
-| --- | --- | --- |
-| 机制 | SAF（Storage Access Framework） | 应用沙盒 |
-| 可写位置 | 用户手动授权的目录 | 沙盒内的 `Documents/` |
-| 是否要授权流程 | 要 | **不要** |
+|         | Android                       | iOS               |
+| ------- | ----------------------------- | ----------------- |
+| 机制      | SAF（Storage Access Framework） | 应用沙盒              |
+| 可写位置    | 用户手动授权的目录                     | 沙盒内的 `Documents/` |
+| 是否要授权流程 | 要                             | **不要**            |
 
 iOS 上分成两层：
 
 - **只读层**：随 App 打包的内置资源，由 Capacitor 在 `capacitor://localhost` 下提供；
 - **可写层**：沙盒里的 `Documents/`，存档、扩展、素材、导出文件都在这里。
 
-读取遵循**覆盖层**语义：先查可写层，命中就返回；否则回退到内置资源。
+读取遵循**覆盖层**语义：先查可写层，命中就返回；否则回退到内置资源。  
 所以「放进去的文件覆盖内置文件，删掉就还原」——这也是第 7.3 节手动导入能生效的原因。
 
-> **为什么可写层根目录就是 `Documents/` 本身（而不是它的某个子目录）？**
-> 一是和安卓对齐（安卓 SAF 里用户选的那个目录就是游戏根目录，没有中间层）；
-> 二是方便手动导入——iOS「文件」App 暴露的正是 `Documents/`，根目录对齐后，
+> **为什么可写层根目录就是 `Documents/` 本身（而不是它的某个子目录）？**  
+> 一是和安卓对齐（安卓 SAF 里用户选的那个目录就是游戏根目录，没有中间层）；  
+> 二是方便手动导入——iOS「文件」App 暴露的正是 `Documents/`，根目录对齐后，  
 > 你可以直接在「文件」里按 `image/character`、`audio/skill`、`extension` 的层级放东西。
 
 ### 1.2 覆盖层有两层，缺一不可
 
-上面那层只覆盖了**走游戏文件 API 的读写**（`game.readFile` / `game.writeFile` …）。
+上面那层只覆盖了**走游戏文件 API 的读写**（`game.readFile` / `game.writeFile` …）。  
 但游戏加载扩展用的是 `<script src="...">`，走的是 **WebView 的网络请求**，不经过 `game.*` API。
 
 所以还需要第二层——**请求层覆盖层**：
 
-| | Android | iOS |
-| --- | --- | --- |
+|      | Android                                           | iOS                                |
+| ---- | ------------------------------------------------- | ---------------------------------- |
 | 拦截机制 | `WebViewAssetLoader` + `JsAwareAssetsPathHandler` | `WKURLSchemeHandler`（Capacitor 内置） |
-| 扩展点 | `PathHandler.handle(path)` | `NonameRouter.route(for:)` |
-| 命中判断 | SAF 里存在该文件 | `Documents/` 下存在该文件 |
+| 扩展点  | `PathHandler.handle(path)`                        | `NonameRouter.route(for:)`         |
+| 命中判断 | SAF 里存在该文件                                        | `Documents/` 下存在该文件                |
 
-两层的效果合起来才是：**用户放在 `Documents/` 里的任何文件，游戏都能读到**，
+两层的效果合起来才是：**用户放在 `Documents/` 里的任何文件，游戏都能读到**，  
 不必重装、不必改任何游戏代码。
 
 ### 1.3 即时编译（JIT）在 iOS 上自动降级
 
-游戏有个可选的「即时编译功能」，依赖 `service worker`；**iOS 的 WKWebView 不支持 service worker**，
+游戏有个可选的「即时编译功能」，依赖 `service worker`；**iOS 的 WKWebView 不支持 service worker**，  
 因此该功能在 iOS 上不可用。现在检测到 iOS WebView 时**静默跳过**，不弹「无法启用即时编译功能」的框。
 
 > 如果你看到这个弹框，说明跑的仍是旧版 `game.js` —— 重新执行 `pnpm build` 即可。
 
 ### 1.4 目录列举：靠 `asset-manifest.json`
 
-游戏启动要「列目录」扫描有哪些武将、卡牌、模式（`getFileList`）。
+游戏启动要「列目录」扫描有哪些武将、卡牌、模式（`getFileList`）。  
 安卓有真实文件系统可以直接列；**iOS 的 WKWebView 出于安全限制不提供目录列举能力**。
 
-因此构建阶段会生成一份资源清单 `dist/asset-manifest.json`（记录全部文件的相对路径），随包发布，
+因此构建阶段会生成一份资源清单 `dist/asset-manifest.json`（记录全部文件的相对路径），随包发布，  
 运行时 `getFileList` 读它来模拟列目录。
 
-> ⚠️ **手动裁剪过 `dist/` 下的资源后，必须重新执行 `pnpm --filter @noname/mobile sync` 重建清单**，
+> ⚠️ **手动裁剪过 `dist/` 下的资源后，必须重新执行 `pnpm --filter @noname/mobile sync` 重建清单**，  
 > 否则游戏会去找已经被删掉的文件。
 
 ---
@@ -106,16 +106,16 @@ iOS 上分成两层：
 
 ### 2.2 还要走本地构建（路线 B）
 
-| 项目 | 要求 |
-| --- | --- |
-| 电脑 | **Apple Silicon Mac**（见下方提示） |
-| macOS | 支持 Xcode 26.0+ 的版本 |
-| Xcode | **26.0+**（Capacitor 8 起改用 Swift Package Manager，**不再需要 CocoaPods**） |
-| Node.js | `^20.19.0 \|\| >=22.12.0`（CI 上用的是 Node 24） |
-| pnpm | `>= 9`，用 `corepack enable pnpm` 启用 |
-| 磁盘 | 建议 ≥ 20 GB 空闲 |
+| 项目      | 要求                                                                  |
+| ------- | ------------------------------------------------------------------- |
+| 电脑      | **Apple Silicon Mac**（见下方提示）                                        |
+| macOS   | 支持 Xcode 26.0+ 的版本                                                  |
+| Xcode   | **26.0+**（Capacitor 8 起改用 Swift Package Manager，**不再需要 CocoaPods**） |
+| Node.js | `^20.19.0 \|\| >=22.12.0`（CI 上用的是 Node 24）                          |
+| pnpm    | `>= 9`，用 `corepack enable pnpm` 启用                                  |
+| 磁盘      | 建议 ≥ 20 GB 空闲                                                       |
 
-> 💡 **Xcode 26 起 Apple 不再支持 Intel Mac。** Intel 机器最高只能装 Xcode 15.x，
+> 💡 **Xcode 26 起 Apple 不再支持 Intel Mac。** Intel 机器最高只能装 Xcode 15.x，  
 > 无法用于本仓库当前的 Capacitor 8 工程。**这类机器请走路线 A 云端构建**（不需要你本地有 Mac）。
 
 装好 Xcode 后先打开一次同意许可协议，然后验证：
@@ -136,7 +136,7 @@ sudo xcode-select -s /Applications/Xcode.app
 
 ### 3.1 原理
 
-GitHub 为公共仓库免费提供 macOS 云主机（Apple Silicon）。工作流
+GitHub 为公共仓库免费提供 macOS 云主机（Apple Silicon）。工作流  
 `.github/workflows/ios-build.yml` 自动完成：
 
 ```
@@ -150,18 +150,16 @@ GitHub 为公共仓库免费提供 macOS 云主机（Apple Silicon）。工作�
 
 1. 打开本仓库的 **Actions** 页面：`https://github.com/cklsit/noname/actions`
 2. 左侧点 **Build unsigned iOS IPA**
-3. 右侧点 **Run workflow**。**最关键的一步**：把 **Use workflow from** 从 `main` 改成
+3. 右侧点 **Run workflow**。**最关键的一步**：把 **Use workflow from** 从 `main` 改成  
    **`feat/ios-support`**
 4. 填写参数：
-
-   | 选项 | 建议值 | 说明 |
-   | --- | --- | --- |
+   | 选项               | 建议值  | 说明                      |
+   | ---------------- | ---- | ----------------------- |
    | `retention_days` | `14` | 产物在 GitHub 上保留多少天（1–90） |
    | `create_release` | ✅ 勾上 | 同时发布到 Release 页面，方便长期下载 |
-
 5. 点绿色 **Run workflow**，刷新页面就能看到新的运行；点进去有实时日志。
 
-> **武将原画与语音没有开关。** 工作流里 “Strip character art and voice” 步骤**恒定执行**，
+> **武将原画与语音没有开关。** 工作流里 “Strip character art and voice” 步骤**恒定执行**，  
 > 只保留 3 张必需的默认剪影，并重建资源清单。被裁掉的资源改由「边玩边下」补齐（见第 7 节）。
 
 **验证**：运行约 4–8 分钟后应为绿色 ✅。若失败，点进去看最后一个红色步骤，对照第 10 节排查。
@@ -177,16 +175,16 @@ git push origin ios-v1.0.0
 
 ### 3.4 拿到产物
 
-| 方式 | 位置 | 说明 |
-| --- | --- | --- |
-| **Artifacts** | 任务页面底部 `noname-ios-unsigned` | zip，解压后是 `.ipa`；到期会被清理 |
-| **Release** | 仓库 Release 页面 | 文件名 `noname-ios-unsigned.ipa`，长期可下载 |
+| 方式            | 位置                           | 说明                                  |
+| ------------- | ---------------------------- | ----------------------------------- |
+| **Artifacts** | 任务页面底部 `noname-ios-unsigned` | zip，解压后是 `.ipa`；到期会被清理              |
+| **Release**   | 仓库 Release 页面                | 文件名 `noname-ios-unsigned.ipa`，长期可下载 |
 
 > ⚠️ 产物是**未签名**的 `.ipa`，**不能双击直接安装**，必须经过 SideStore / AltStore 重签（见第 6 节）。
 
 ### 3.5 关于仓库体积（为什么有时会失败）
 
-《无名杀》的 Git 历史非常庞大（十几年累积，大量 mp3 / jpg 直接提交进历史），完整克隆需要 TB 级磁盘。
+《无名杀》的 Git 历史非常庞大（十几年累积，大量 mp3 / jpg 直接提交进历史），完整克隆需要 TB 级磁盘。  
 工作流为此做了三重防护：
 
 1. `fetch-depth: 1` —— 只拉取最新 1 个提交；
@@ -212,7 +210,7 @@ pnpm install
 
 ### 4.2 确认 iOS 工程存在
 
-`apps/mobile/ios/` **已随仓库提供**（与 `android/` 一样纳入版本管理），克隆下来即可直接构建，
+`apps/mobile/ios/` **已随仓库提供**（与 `android/` 一样纳入版本管理），克隆下来即可直接构建，  
 **不需要**执行 `npx cap add ios`。
 
 ```bash
@@ -220,7 +218,7 @@ ls apps/mobile/ios/App/App/*.swift
 # AppDelegate.swift  NonameBridgeViewController.swift  NonameRouter.swift
 ```
 
-> 仅在工程被误删时才需要重建。注意 `npx cap add ios` 会生成一份**官方默认模板**，
+> 仅在工程被误删时才需要重建。注意 `npx cap add ios` 会生成一份**官方默认模板**，  
 > 上面两个 `Noname*.swift` 会丢失，需要从 Git 恢复：`git checkout -- apps/mobile/ios`。
 
 ### 4.3 查询 Team ID
@@ -228,8 +226,8 @@ ls apps/mobile/ios/App/App/*.swift
 1. 打开 <https://developer.apple.com/account>
 2. 进入 **Membership details**，找到 **Team ID**（10 位字符）
 
-> **没有付费开发者账号（$99/年）也可以。** 免费 Apple ID 照样能出 `.ipa`，只是签名 **7 天过期**、
-> 最多 3 台设备，自用测试足够。免费账号的 Team ID 在 Xcode 的 `Settings → Accounts` 里就能看到
+> **没有付费开发者账号（$99/年）也可以。** 免费 Apple ID 照样能出 `.ipa`，只是签名 **7 天过期**、  
+> 最多 3 台设备，自用测试足够。免费账号的 Team ID 在 Xcode 的 `Settings → Accounts` 里就能看到  
 > （显示为 `你的名字 (Personal Team)`）。
 
 ### 4.4 一键构建
@@ -251,16 +249,16 @@ apps/mobile/ios/build/export/<AppName>.ipa
 
 ### 4.5 可选参数
 
-| 参数 | 作用 |
-| --- | --- |
-| `--method=development` | 默认，适合侧载（SideStore / AltStore） |
-| `--method=ad-hoc` | 需先在 Apple 后台登记设备 UDID |
-| `--method=app-store-connect` | 用于上架 App Store 或 TestFlight |
-| `--configuration=Release` | 出正式版（体积更小、运行更快），默认 Debug |
-| `--skip-web-build` | 复用已有 `dist`，不重新构建网页部分 |
+| 参数                           | 作用                            |
+| ---------------------------- | ----------------------------- |
+| `--method=development`       | 默认，适合侧载（SideStore / AltStore） |
+| `--method=ad-hoc`            | 需先在 Apple 后台登记设备 UDID         |
+| `--method=app-store-connect` | 用于上架 App Store 或 TestFlight   |
+| `--configuration=Release`    | 出正式版（体积更小、运行更快），默认 Debug      |
+| `--skip-web-build`           | 复用已有 `dist`，不重新构建网页部分         |
 
-> **想打一个「素材齐全」的包**（例如模拟器调试、上架前回归）：
-> `pnpm build && pnpm --filter @noname/mobile sync`，再直接对 `apps/mobile/ios` 出包。
+> **想打一个「素材齐全」的包**（例如模拟器调试、上架前回归）：  
+> `pnpm build && pnpm --filter @noname/mobile sync`，再直接对 `apps/mobile/ios` 出包。  
 > 这样包内会带上完整的武将原画与语音。
 
 ---
@@ -269,15 +267,15 @@ apps/mobile/ios/build/export/<AppName>.ipa
 
 ### 5.1 实测体积
 
-| 项目 | 大小 |
-| --- | --- |
-| 完整资源（`dist/`） | 约 **1.6 GB** |
-| └ `audio/skill` 技能语音 | **474 MB** |
-| └ `image/character` 武将立绘 | **393 MB** |
-| └ `audio/die` 阵亡语音 | **112 MB** |
-| └ 其余（背景 / 表情 / 卡牌 / 代码…） | 约 600 MB |
-| **裁剪三大目录后**（未压缩） | 约 **392 MB** |
-| **产出的 ipa** | 约 **294 MB**（281 MiB） |
+| 项目                       | 大小                    |
+| ------------------------ | --------------------- |
+| 完整资源（`dist/`）            | 约 **1.6 GB**          |
+| └ `audio/skill` 技能语音     | **474 MB**            |
+| └ `image/character` 武将立绘 | **393 MB**            |
+| └ `audio/die` 阵亡语音       | **112 MB**            |
+| └ 其余（背景 / 表情 / 卡牌 / 代码…） | 约 600 MB              |
+| **裁剪三大目录后**（未压缩）         | 约 **392 MB**          |
+| **产出的 ipa**              | 约 **294 MB**（281 MiB） |
 
 ### 5.2 相关限制
 
@@ -287,21 +285,21 @@ apps/mobile/ios/build/export/<AppName>.ipa
 
 **被裁掉的三个目录**（合计约 979 MB）：
 
-| 裁剪内容 | 体积 | 影响 |
-| --- | --- | --- |
-| `audio/skill` | 474 MB | 武将技能无配音，其他正常 |
-| `image/character` | 393 MB | 武将显示默认剪影 |
-| `audio/die` | 112 MB | 阵亡无配音 |
+| 裁剪内容              | 体积     | 影响           |
+| ----------------- | ------ | ------------ |
+| `audio/skill`     | 474 MB | 武将技能无配音，其他正常 |
+| `image/character` | 393 MB | 武将显示默认剪影     |
+| `audio/die`       | 112 MB | 阵亡无配音        |
 
-> ⚠️ `image/character` 里的 `default_silhouette_*` 是**游戏必需**的默认剪影，不能整目录删干净，
+> ⚠️ `image/character` 里的 `default_silhouette_*` 是**游戏必需**的默认剪影，不能整目录删干净，  
 > 否则没有立绘的武将会显示破图。
 
 ### 5.3 两条路线怎么裁
 
-- **路线 A（云端构建）**：工作流里的 “Strip character art and voice” 步骤**恒定执行**，没有开关。
+- **路线 A（云端构建）**：工作流里的 “Strip character art and voice” 步骤**恒定执行**，没有开关。  
   它只保留必需的 3 张默认剪影，并重建资源清单。你不需要做任何事。
-- **路线 B（本地构建，可选）**：若你也想让本地包瘦身，手动删除上述目录后
-  **必须重新执行 `pnpm --filter @noname/mobile sync`** 重建 `asset-manifest.json`，
+- **路线 B（本地构建，可选）**：若你也想让本地包瘦身，手动删除上述目录后  
+  **必须重新执行 `pnpm --filter @noname/mobile sync`** 重建 `asset-manifest.json`，  
   否则游戏会去找已删除的文件。
 
 ---
@@ -316,7 +314,7 @@ apps/mobile/ios/build/export/<AppName>.ipa
 
 **验证**：图标出现后点开，能进首页即成功。
 
-> **7 天过期**：免费账号签名的应用**每 7 天需要重新签名一次**。SideStore 会在充电 + 连接 Wi-Fi 时
+> **7 天过期**：免费账号签名的应用**每 7 天需要重新签名一次**。SideStore 会在充电 + 连接 Wi-Fi 时  
 > **自动续签**，所以平时不用管；如果图标变灰打不开，打开 SideStore 手动刷新一次即可。
 
 > 首次启动后建议直接去「菜单 → 其它 → 更新 → 下载素材」看一眼进度（见 7.2）。
@@ -325,60 +323,60 @@ apps/mobile/ios/build/export/<AppName>.ipa
 
 ## 7. 素材补齐（武将原画与语音）
 
-包内不含 `audio/skill`、`audio/die`、`image/character` 三大目录（见第 5 节），
+包内不含 `audio/skill`、`audio/die`、`image/character` 三大目录（见第 5 节），  
 结果是武将**没有立绘、没有配音**。共有**三条互补路径**，前两条全自动、第三条手动。
 
 ### 7.1 边玩边下（默认，无需任何操作）
 
-游戏用到某个武将的立绘或语音、而本地没有时，**只把那一个文件**取回来。
+游戏用到某个武将的立绘或语音、而本地没有时，**只把那一个文件**取回来。  
 首次遇到某个武将会多出零点几秒等待，之后**永久命中本地**。
 
-- 适用范围：只处理被裁掉的三个前缀（`image/character/`、`audio/skill/`、`audio/die/`）；
+- 适用范围：只处理被裁掉的三个前缀（`image/character/`、`audio/skill/`、`audio/die/`）；  
   打包保留的 `default_silhouette_*` 不参与。
-- **画面上没有任何提示** —— 这件事发生在你打牌的过程中，任何浮层都会挡住牌桌，
+- **画面上没有任何提示** —— 这件事发生在你打牌的过程中，任何浮层都会挡住牌桌，  
   所以刻意不做界面反馈，进度只写 `console`。
-- 不重复下载：会话内记住「已确认存在 / 已确认拿不到」；同一路径并发只下一次；
+- 不重复下载：会话内记住「已确认存在 / 已确认拿不到」；同一路径并发只下一次；  
   `404` 视为上游确实没有，不再换源重试。
 
 > **对局刚开始时卡一下是正常的**，就是它在下载本局用到的立绘/语音，仅首次出现。
 
 ### 7.2 批量下载（游戏启动后自动开始）
 
-游戏启动约 **6 秒后**（等首屏跑完）会**自动**开始批量补齐，**不需要你点任何按钮** ——
+游戏启动约 **6 秒后**（等首屏跑完）会**自动**开始批量补齐，**不需要你点任何按钮** ——  
 侧载包缺的正是这约 979 MB 素材，静默补完即可。**已经补齐过就跳过**，不会每次启动白跑。
 
 想查看进度或中途停止：
 
 > **菜单 → 其它 → 更新 → 下载素材**
 
-| 面板上的东西 | 含义 |
-| --- | --- |
+| 面板上的东西     | 含义                                                         |
+| ---------- | ---------------------------------------------------------- |
 | **素材就绪进度** | `已就绪 / 总数`（约 1.2 万项），包含内置已有项；按「边玩边下 + 批量下载」**共用**的记录算，每秒刷新 |
-| 状态行 | 本次下载正在做什么（源、清单来源、失败数…） |
-| **主按钮** | 运行中显示 **停止下载**；空闲时是「开始下载 / 重新下载」 |
-| **测试连接** | 逐个探测各下载源并列出 HTTP 状态，用来判断「哪个域名不通」 |
+| 状态行        | 本次下载正在做什么（源、清单来源、失败数…）                                     |
+| **主按钮**    | 运行中显示 **停止下载**；空闲时是「开始下载 / 重新下载」                           |
+| **测试连接**   | 逐个探测各下载源并列出 HTTP 状态，用来判断「哪个域名不通」                           |
 
-- 点 **停止下载** 只终止**本次**下载；下次启动游戏会重新开始，
+- 点 **停止下载** 只终止**本次**下载；下次启动游戏会重新开始，  
   已经下过的靠 `checkFile` 跳过，所以是**接着下**而不是从头再来。
 - 整个过程**静默**：画面上不会有任何提示，进度只体现在这个面板与 `console`。
 
 **实现要点**（想改代码时看）：
 
-| 关注点 | 做法 |
-| --- | --- |
-| 为什么能下到 | 从上游 `libnoname/noname` 的 `main` 分支取文件，写进 `Documents/`；靠 1.2 节的两层覆盖层直接生效 |
-| 文件清单 | **首选构建期内置的 `asset-download-manifest.json`**（实测 **12048** 条，随包发布，完全离线）。仅在它缺失时才回退到 `api.github.com` 的 Git Trees API |
-| 文件内容 | 按顺序尝试多个源，第一个成功即用：GitHub Raw → jsDelivr → jsDelivr(Fastly) → jsDelivr(Gcore)。某源连续失败 5 次自动切换 |
-| 上游路径前缀 | `apps/core/`（注意不是仓库根目录） |
-| 本地落盘路径 | 去掉前缀后写入，例如 `image/character/zhaoyun.jpg` → `Documents/image/character/zhaoyun.jpg` |
-| 断点续传 | 有历史记录时逐个 `checkFile` 跳过已下载项，因此「停止后再点」是续传而非重下 |
-| iCloud 备份 | `Documents/` 默认进 iCloud 备份。补齐约 979 MB 素材后，备份体积也会相应增长 |
+| 关注点       | 做法                                                                                                                |
+| --------- | ----------------------------------------------------------------------------------------------------------------- |
+| 为什么能下到    | 从上游 `libnoname/noname` 的 `main` 分支取文件，写进 `Documents/`；靠 1.2 节的两层覆盖层直接生效                                           |
+| 文件清单      | **首选构建期内置的 `asset-download-manifest.json`**（实测 **12048** 条，随包发布，完全离线）。仅在它缺失时才回退到 `api.github.com` 的 Git Trees API |
+| 文件内容      | 按顺序尝试多个源，第一个成功即用：GitHub Raw → jsDelivr → jsDelivr(Fastly) → jsDelivr(Gcore)。某源连续失败 5 次自动切换                        |
+| 上游路径前缀    | `apps/core/`（注意不是仓库根目录）                                                                                           |
+| 本地落盘路径    | 去掉前缀后写入，例如 `image/character/zhaoyun.jpg` → `Documents/image/character/zhaoyun.jpg`                                |
+| 断点续传      | 有历史记录时逐个 `checkFile` 跳过已下载项，因此「停止后再点」是续传而非重下                                                                      |
+| iCloud 备份 | `Documents/` 默认进 iCloud 备份。补齐约 979 MB 素材后，备份体积也会相应增长                                                              |
 
-> **⚠️ 改代码时务必注意：写入时传原始字节，不要自己先转 base64。**
-> `game.writeFile` 的 `data` 参数传**字符串**会被当作文件内容做 UTF-8 编码；
-> 只有传 `ArrayBuffer` / `Blob` / `ArrayBufferView` 才按二进制落盘。
-> 曾经因为传了 base64 字符串，导致下载全部「成功」但原画与语音一个都出不来。
-> 另外，**只要写入格式变了就必须把 `WRITE_FORMAT_VERSION` 加一**，否则用户机器上旧格式
+> **⚠️ 改代码时务必注意：写入时传原始字节，不要自己先转 base64。**  
+> `game.writeFile` 的 `data` 参数传**字符串**会被当作文件内容做 UTF-8 编码；  
+> 只有传 `ArrayBuffer` / `Blob` / `ArrayBufferView` 才按二进制落盘。  
+> 曾经因为传了 base64 字符串，导致下载全部「成功」但原画与语音一个都出不来。  
+> 另外，**只要写入格式变了就必须把 `WRITE_FORMAT_VERSION` 加一**，否则用户机器上旧格式  
 > 写出的坏文件会被续传逻辑永久当成「已下载」。
 
 ### 7.3 手动导入（用「文件」App）
@@ -397,6 +395,7 @@ iOS 版开启了文件共享，可以直接用系统「文件」App 打开游戏
 ├── audio/die/           阵亡语音（文件名 = 武将 ID，如 zhaoyun.mp3）
 └── extension/           扩展（每个扩展一个文件夹，文件夹名即扩展名）
 ```
+
 
 这四个目录在 App **首次启动时自动建好**。放进去的文件会**覆盖**内置同名资源，删掉即还原，
 所以只补一部分也可以。
