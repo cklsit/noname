@@ -411,34 +411,39 @@ iOS 版开启了文件共享，可以直接用系统「文件」App 打开游戏
 ### 7.4 素材补充包（上游没有的素材）
 
 手机端「边玩边下」只能从**上游官方仓库**取文件，**上游没有的永远下不到**。
-实测上游约 78 个武将没有原画（例如势曹爽、势陈矫、势陈群等）。
+实测上游约 78 个武将没有原画（例如势曹爽、势陈矫、势陈群等）。这部分要靠一个**素材补充包**补齐：
 
-要补上这部分，只能自己整理一份**本地素材补充包**：从第三方整合包（社区流传的「懒人包」等）
-的 `resources/app/` 里，筛出「上游仓库完全没有同名文件」的那些，约 37 MB：
+> **📦 下载：[noname-ios-materials.zip](https://github.com/cklsit/noname/releases/download/ios-materials-v1/noname-ios-materials.zip)**（约 33 MB）
+> 含 **39 张立绘 + 458 段技能语音 + 91 段阵亡语音**，解压后约 39 MB。
+
+包内结构：
 
 ```
-无名杀素材补充/            ← 这是本地文件夹
+无名杀素材补充/
 ├── image/character/      39 张立绘
 ├── audio/skill/          458 段技能语音
 ├── audio/die/            91 段阵亡语音
 └── 使用说明.md
 ```
 
-> ⚠️ **这个包不在 GitHub 仓库里，也不是 Release 附件** —— 它是本地整理出来的文件夹，
-> 在仓库页面上搜是搜不到的（`git log` 可证：`使用说明.md` 从未入库）。
-> 同理，本手册只描述「怎么用它」，不提供它本身。
+**导入方法（全程在手机上完成，不需要电脑）**：
 
-**导入方法**（需要用整理它的那台电脑）：
-
-1. 在电脑上把整个 `无名杀素材补充/` 文件夹拖进 **iCloud 云盘**目录；
-2. 手机上打开「**文件**」App → **iCloud 云盘** → 进入 `无名杀素材补充/`；
-3. 进入 `image/character/` → 全选 → **拷贝**；
-   回到「**我的 iPhone → 无名杀 → image/character**」→ **粘贴**；
+1. 用手机浏览器打开上面的下载链接，下载 `noname-ios-materials.zip`；
+2. 打开「**文件**」App → **下载项** → 点这个 zip，自动解压出 `无名杀素材补充/`；
+3. 进入 `无名杀素材补充/image/character/` → 右上角「…」→ **全选** → **拷贝**；
+   再到「**我的 iPhone → 无名杀 → image/character**」→ 空白处长按 → **粘贴**；
 4. `audio/skill/`、`audio/die/` 同样操作；
-5. **完全退出游戏再重开**（不要只是切后台）。
+5. **完全退出游戏再重开**（不要只切后台）。
 
-> 该文件夹里的《使用说明.md》有更细的逐步说明。
+> 包内《使用说明.md》有更细的逐步说明。
 > ⚠️ 别往 `image/character/` 放 `default_silhouette_*`，那三张是全局兜底图。
+
+**这个包是怎么来的**：从第三方整合包（社区流传的「懒人包」等）的 `resources/app/` 里，
+筛出「上游仓库完全没有同名文件」的那些。**不是本项目原创素材**，仅供个人自用补齐。
+
+> ℹ️ 它**不在仓库的 git 历史里**（`git log` 可证 `使用说明.md` 从未入库），
+> 而是作为 **Release 附件**发布 —— 这样手机浏览器能直接下载。
+> 如果你在仓库的文件树里翻找，是找不到的。
 
 ---
 
@@ -545,7 +550,7 @@ pnpm --filter @noname/mobile build:ios       # 在 Mac 上生成 iOS 包（见 4
 | 菜单 / 顶部按钮点不动 | 系统栏（状态栏、导航栏）浮层吃掉了触摸事件。确认 `capacitor.config.ts` 中 `SystemBars.hidden` 为 `true`，且未启用 `contentInset` |
 | 游戏能启动但读不到武将 / 卡牌 | `asset-manifest.json` 缺失或未随资源裁剪更新，重新执行 `pnpm --filter @noname/mobile sync` |
 | 首页黑屏 / 加载失败 | 自定义 `Router` 的 fallback 逻辑必须与官方 `CapacitorRouter` 逐字对齐（无扩展名的路径要回退到 `index.html`），改动该文件时不要凭直觉改 |
-| **在 GitHub 仓库里找不到《使用说明.md》/「无名杀素材补充」** | **不是 bug**：那是本地整理的文件夹，**不在仓库里、也不是 Release 附件**（`git log` 可证从未入库）。获取与导入方法见 7.4 |
+| **在 GitHub 仓库里找不到《使用说明.md》/「无名杀素材补充」** | **不是 bug**：它不在仓库文件树里，而是挂在 **Release** 上（[下载链接](https://github.com/cklsit/noname/releases/download/ios-materials-v1/noname-ios-materials.zip)）。手机自带浏览器打开即可下载，步骤见 7.4 |
 
 ---
 
