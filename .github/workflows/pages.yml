@@ -33,6 +33,16 @@ name: Deploy Web to GitHub Pages
 #
 # 触发方式：GitHub 网页 → Actions → “Deploy Web to GitHub Pages” → Run workflow
 # 站点地址：https://cklsit.github.io/noname/
+#
+# ⚠️ 已知限制（2026-10-11 实测，务必先读）：
+#   当前上游 web 版在**启动时**要求**同源 fs 后端**（@noname/server / noname-server 提供的
+#   /checkFile、/readFile、/getFileList、/writeFile 等接口，见 apps/core/noname/init/browser.js）。
+#   GitHub Pages 为纯静态托管，无法提供这些接口 → 游戏会停在
+#   「《无名杀》加载内容失败 / game.checkFile is not a function」（开机探测失败即中止，无降级路径）。
+#   本工作流已解决**部署侧**的全部问题（体积裁剪、清单重建、子路径 importmap 改写、发布链路），
+#   可作为后续「Service Worker 静态后端」等方案的地基。若要在网页端完整游玩，请改用：
+#     ① 本地 / 服务器运行 noname-server（官方网页版运行方式）；或
+#     ② 带后端的托管（例如用 Cloudflare Pages Functions 等实现同一套 fs 接口）。
 
 on:
   # 首版仅手动触发（见顶部说明）
