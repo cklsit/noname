@@ -143,6 +143,43 @@ jobs:
             exit 1
           fi
 
+      - name: Rewrite importmap to relative paths (subpath deployment)
+        # 为什么需要这一步：
+        #   构建产物 index.html 里 importmap 的条目是**根绝对路径**（"/noname.js"、
+        #   "/node_modules/.pnpm/..."）。在项目站点（子路径 /noname/）下，这些路径会解析到
+        #   账号根域名并 404，导致所有 `import ... from "vue" / "noname"` 的模块
+        #   （启动页、菜单、以及运行时 351 个内容包）全部加载失败——实测基线为白屏。
+        #   这里在部署前统一改写为文档相对路径（"./..."），与其余产物（vite base:"./"）
+        #   保持一致；改写后带断言兜底：若仍有绝对路径条目则直接失败。
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const file = "dist/index.html";
+          const html = fs.readFileSync(file, "utf8");
+          const re = /<script type="importmap">([\s\S]*?)<\/script>/;
+          const match = html.match(re);
+          if (!match) {
+            console.error("::error::index.html 中未找到 importmap");
+            process.exit(1);
+          }
+          const map = JSON.parse(match[1]);
+          let changed = 0;
+          for (const [key, value] of Object.entries(map.imports ?? {})) {
+            if (typeof value === "string" && value.startsWith("/") && !value.startsWith("//")) {
+              map.imports[key] = "." + value;
+              changed += 1;
+            }
+          }
+          const replaced = html.replace(re, `<script type="importmap">${JSON.stringify({ imports: map.imports }, null, 2)}</script>`);
+          fs.writeFileSync(file, replaced);
+          const after = JSON.parse(replaced.match(re)[1]);
+          const bad = Object.entries(after.imports).filter(([, v]) => typeof v === "string" && v.startsWith("/"));
+          if (bad.length > 0) {
+            console.error("::error::importmap 仍存在绝对路径条目: " + JSON.stringify(bad));
+            process.exit(1);
+          }
+          console.log(`importmap 已改写 ${changed} 条为相对路径: ` + JSON.stringify(after.imports));
+          NODE
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
