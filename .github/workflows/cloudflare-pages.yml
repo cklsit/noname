@@ -53,6 +53,12 @@ name: Deploy Web to Cloudflare Pages
 #      进而把 index.html 内容当作文件数据读取（atob 解码崩溃、启动流程错乱，2026-10-11 实测）。
 #      对策：写入顶层 404.html（平台自此对未匹配路径返回 404，与本地/GitHub Pages 一致）。
 #
+# ⚡ 联机中继（2026-10-11 追加）：浏览器禁止 https 页面直连 ws://（混合内容拦截），
+#   而社区联机服普遍只有 ws。本工作流注入 Pages Functions 中继（_worker.js + _routes.json）：
+#     wss://<本站>/relay?to=<host>:<port>  →  ws://<host>:<port>（透明转发，目标端口需 ≥1024）
+#   游戏内「联机」输入上述 wss 地址即可连接未加密的联机服务器。仅 /relay 走 Functions，
+#   静态路径不受影响（沿用周静态免费额度；Functions 免费额度 10 万请求/天仅中继路径占用）。
+#
 # 触发方式：GitHub 网页 → Actions → “Deploy Web to Cloudflare Pages” → Run workflow
 #   （或 gh workflow run cloudflare-pages.yml --repo cklsit/noname --ref main）
 
@@ -365,7 +371,7 @@ jobs:
           console.log(root + ' asset-manifest.json: ' + entries.length + ' entries');
           "
 
-      - name: Write platform files (_headers & 404.html)
+      - name: Write platform files (_headers, 404.html & relay)
         # 为什么需要这两个文件：
         #   ① _headers：上游注册 SW 时带 updateViaCache:"all"（src 见 index.html），浏览器
         #      检查 SW 更新时会使用 HTTP 缓存 → 对 service-worker.js 与 asset-manifest.json
@@ -412,6 +418,12 @@ jobs:
           cat dist/_headers
           echo "===== dist/404.html（前 3 行）====="
           head -3 dist/404.html
+
+          # 联机中继（wss→ws）：让 https 页面能连接只有 ws 的联机服务器
+          # （浏览器混合内容拦截的绕行层；仅 /relay 路径走 Functions，见 _routes.json）
+          cp .github/pages/relay-worker.js dist/_worker.js
+          cp .github/pages/relay-routes.json dist/_routes.json
+          echo "===== 联机中继已注入（_worker.js + _routes.json）====="
 
       - name: Verify Cloudflare Pages limits (file count & sizes)
         # Cloudflare Pages 免费版硬限制：20,000 文件 / 25 MiB 单文件。
@@ -461,6 +473,11 @@ jobs:
             exit 1
           fi
           echo "404.html 检查通过（CF SPA 回退已关闭）"
+          if [ ! -f dist/_worker.js ] || [ ! -f dist/_routes.json ]; then
+            echo "::error::联机中继文件缺失（_worker.js / _routes.json）"
+            exit 1
+          fi
+          echo "联机中继检查通过（_worker.js + _routes.json）"
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
