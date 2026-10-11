@@ -39,7 +39,7 @@ name: Deploy Web to Cloudflare Pages
 #        "./" 或 "../../" 相对形式，两种部署布局下解析结果都正确（已在 GitHub Pages 全量验证），
 #        因此本工作流与旧 pages.yml 共用同一套产物后处理逻辑。
 #
-# ⚠️ 两个平台特性与对策（2026-10-11 首次部署实测，v2 修正）：
+# ⚠️ 三个平台特性与对策（2026-10-11 部署实测，v2–v4 修正）：
 #   ① wrangler 上传有**硬编码忽略清单**（含 "**/node_modules"，不可配置）→ dist/node_modules
 #      里的模块文件（vue / pinyin-pro / dedent / crypto-js…，共 120 个）不会被上传，
 #      importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。对策：部署前把 node_modules
@@ -47,8 +47,11 @@ name: Deploy Web to Cloudflare Pages
 #   ② asset-manifest.json 不是 pnpm build 的产物（源码树无生成者），是「静态部署侧」产物
 #      （SW fs shim 的目录索引）。GitHub Pages 版由旧工作流的「裁减后重建」步骤顺手生成；
 #      本工作流不裁减，须显式生成（否则 shim 索引为空，目录列举能力缺失，见 Generate 步骤）。
-#   另：CF Pages 对未匹配路径默认回退 index.html（200，SPA 行为）——对游戏无影响
-#      （SW 未激活时 fs 探测本就失败走兜底；激活后由 SW 接管）。
+#   ③ CF Pages 在**没有顶层 404.html** 时会按 SPA 处理：任何未匹配路径都回退 index.html
+#      并返回 200 —— 这会破坏「文件存在性」语义：SW fs shim 的 HEAD 兜底与游戏的
+#      checkFile 探测（如 noname.config.txt「懒人包配置」）都会把"不存在"误判为"存在"，
+#      进而把 index.html 内容当作文件数据读取（atob 解码崩溃、启动流程错乱，2026-10-11 实测）。
+#      对策：写入顶层 404.html（平台自此对未匹配路径返回 404，与本地/GitHub Pages 一致）。
 #
 # 触发方式：GitHub 网页 → Actions → “Deploy Web to Cloudflare Pages” → Run workflow
 #   （或 gh workflow run cloudflare-pages.yml --repo cklsit/noname --ref main）
@@ -347,7 +350,7 @@ jobs:
           ROOT=dist node -e "
           const fs=require('fs'),path=require('path');
           const root=process.env.ROOT, out=path.resolve(root,'asset-manifest.json');
-          const ignored=new Set(['asset-manifest.json','asset-download-manifest.json','preload.js','_headers','_redirects','_routes.json','_worker.js','node_modules','vendor']);
+          const ignored=new Set(['asset-manifest.json','asset-download-manifest.json','preload.js','_headers','_redirects','_routes.json','_worker.js','node_modules','vendor','404.html']);
           const entries=[];
           (function walk(dir){
             for(const name of fs.readdirSync(dir)){
@@ -362,13 +365,18 @@ jobs:
           console.log(root + ' asset-manifest.json: ' + entries.length + ' entries');
           "
 
-      - name: Write _headers (fresh service worker & manifest)
-        # 为什么需要 _headers：
-        #   ① 上游注册 SW 时带 updateViaCache:"all"（src 见 index.html），浏览器检查 SW 更新时
-        #      **会使用 HTTP 缓存** → 若 service-worker.js 被 CDN 长缓存，新版本部署后玩家迟迟
-        #      拿不到更新。显式 no-cache（每次协商，配合 ETag）保证「重部署=立即被发现」。
-        #   ② asset-manifest.json 是 SW 的目录索引来源，同样要求新鲜。
-        #   其余静态资源不额外配置（沿用 Cloudflare Pages 默认的 ETag 协商策略）。
+      - name: Write platform files (_headers & 404.html)
+        # 为什么需要这两个文件：
+        #   ① _headers：上游注册 SW 时带 updateViaCache:"all"（src 见 index.html），浏览器
+        #      检查 SW 更新时会使用 HTTP 缓存 → 对 service-worker.js 与 asset-manifest.json
+        #      置 no-cache（每次协商，配合 ETag），保证「重部署 = 立即被发现」。其余静态资源
+        #      不额外配置（沿用 Cloudflare Pages 默认的协商缓存策略）。
+        #   ② 404.html：CF Pages 在**没有顶层 404.html** 时按 SPA 处理 —— 任何未匹配路径
+        #      回退 index.html 且返回 200（实测）。这破坏「文件存在性」语义：SW fs shim 的
+        #      staticFileExists（HEAD 兜底）与游戏启动的 checkFile 探测（如 noname.config.txt）
+        #      都会把"不存在"误判为"存在"，随后把 index.html 的 HTML 内容当作文件数据读取
+        #      （base64 解码崩溃 / 存在性判断全错）。写入 404.html 后，未匹配路径返回 404，
+        #      与本地 / GitHub Pages 行为一致。
         run: |
           cat > dist/_headers <<'EOF'
           /service-worker.js
@@ -377,8 +385,33 @@ jobs:
           /asset-manifest.json
             Cache-Control: no-cache, must-revalidate
           EOF
+
+          cat > dist/404.html <<'EOF'
+          <!doctype html>
+          <html lang="zh-CN">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>404 - 无名杀</title>
+          <style>
+          body{font-family:system-ui,sans-serif;background:#16161e;color:#ddd;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+          .box{text-align:center}h1{font-size:3em;margin:0 0 .3em}a{color:#7aa2f7}
+          </style>
+          </head>
+          <body>
+          <div class="box">
+          <h1>404</h1>
+          <p>页面不存在</p>
+          <p><a href="./">返回《无名杀》</a></p>
+          </div>
+          </body>
+          </html>
+          EOF
+
           echo "===== dist/_headers ====="
           cat dist/_headers
+          echo "===== dist/404.html（前 3 行）====="
+          head -3 dist/404.html
 
       - name: Verify Cloudflare Pages limits (file count & sizes)
         # Cloudflare Pages 免费版硬限制：20,000 文件 / 25 MiB 单文件。
@@ -423,6 +456,11 @@ jobs:
             exit 1
           fi
           echo "vendor 结构检查通过（node_modules 已改名）"
+          if [ ! -f dist/404.html ]; then
+            echo "::error::dist/404.html 缺失（CF 将按 SPA 回退 index.html，破坏文件存在性语义）"
+            exit 1
+          fi
+          echo "404.html 检查通过（CF SPA 回退已关闭）"
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
