@@ -8,8 +8,8 @@
 </p>
 
 > **本仓库是 [libnoname/noname](https://github.com/libnoname/noname) 的 Fork**，版本 `v1.11.6`。
-> 相比上游，本仓库额外提供了 **iOS 平台支持** 与 **GitHub Actions 云端构建 iOS 安装包** 的能力，
-> 详见下方「本 Fork 的新增能力」。
+> 相比上游，本仓库额外提供了 **iOS 平台支持**、**GitHub Actions 云端构建 iOS 安装包**、
+> **网页版在线游玩（Cloudflare Pages）** 与 **网页版联机中继** 能力，详见下方「本 Fork 的新增能力」。
 
 ---
 
@@ -52,6 +52,35 @@ pnpm --filter @noname/mobile build:android   # 生成安卓包
 pnpm --filter @noname/mobile build:ios       # 在 Mac 上生成 iOS 包
 ```
 
+### 网页版在线游玩（Cloudflare Pages）
+
+上游网页版需要自建 `noname-server`（同源文件系统后端）才能完成启动；本 Fork 将其改造为**纯静态托管即可直接游玩**：
+
+- **在线地址：<https://noname-cje.pages.dev/>** —— 打开即玩，无需下载安装
+- 部署方式：[`.github/workflows/cloudflare-pages.yml`](https://github.com/cklsit/noname/blob/main/.github/workflows/cloudflare-pages.yml)（在 Actions 页面手动触发）
+- 核心改造：
+  - **Service Worker 静态文件系统后端**（[`.github/pages/sw-shim.js`](https://github.com/cklsit/noname/blob/main/.github/pages/sw-shim.js)）：在纯静态环境中仿真上游启动所必需的 `/checkFile`、`/readFile`、`/writeFile` 等接口——读取走「静态文件 + `asset-manifest.json` 索引」，写入（存档、设置）保存在浏览器缓存层
+  - **部署路径适配**：`importmap`、文件系统路由与内容包加载路径在构建期统一相对化
+
+> ⚠️ 限制与须知：
+> - **存档保存在浏览器本地**：清除浏览器站点数据会丢失存档；不同浏览器 / 设备之间不互通
+> - 首次打开会经历数次自动重载（上游 Service Worker 注册行为，属正常现象）
+> - 部署为完整版（含全部武将立绘与语音，未做裁剪）
+
+### 网页版联机（中继）
+
+浏览器的安全策略禁止 **HTTPS 页面直连未加密的 `ws://` 联机服务器**（混合内容拦截），而社区联机服务器大多只提供 `ws://`。本 Fork 的网页版联机处理方式：
+
+- **服务器提供加密**：在「联机」输入框填 `wss://服务器地址:端口` 直接连接
+- **服务器只有 `ws://`**：在网页版中**输入服务器地址即可**——客户端会自动经本站中继转发（中继实现：[`.github/pages/relay-worker.js`](https://github.com/cklsit/noname/blob/main/.github/pages/relay-worker.js)）
+- 本地版 / 桌面版不受此限制，按原有方式直接填地址即可
+
+> ⚠️ 限制（均为平台级限制，非本站故障）：
+> - **Cloudflare 不允许其边缘函数出站直连 IP 地址**，故中继**只能转发「域名形态」的服务器**——在网页版中直接输入**纯 IP**（如 `43.138.118.130`）时无法建立连接；若服务器提供域名，请填域名
+> - 目标服务器端口需 **≥ 1024**；服务器若启用「未备案域名拦截」（常见于中国大陆云服务商）可能拒绝连接
+> - 免费额度：Cloudflare Pages Functions 每天 10 万次请求（WebSocket 按消息计），小规模联机足够
+> - 💡 如需连接「仅提供纯 IP」的服务器，可通过自建中继解决（原理：由能连通目标的网络发起连接，再以 `wss` 对外暴露）
+
 ---
 
 ## 项目使用约定
@@ -74,7 +103,7 @@ pnpm --filter @noname/mobile build:ios       # 在 Mac 上生成 iOS 包
 | `packages` | 可复用的工具包与扩展 |
 | `scripts` | 构建与开发脚本 |
 | `docs` | 开发文档（游戏流程、技能格式、皮肤与音频指南等） |
-| `.github/workflows` | CI：构建部署、Lint、发布，以及 **iOS 云端构建** |
+| `.github/workflows` | CI：构建部署、Lint、发布，以及 **iOS 云端构建**、**网页版部署（Cloudflare Pages）** |
 
 ## 快速启动
 
