@@ -35,15 +35,14 @@ name: Deploy Web to GitHub Pages
 # 触发方式：GitHub 网页 → Actions → “Deploy Web to GitHub Pages” → Run workflow
 # 站点地址：https://cklsit.github.io/noname/
 #
-# ⚠️ 已知限制（2026-10-11 实测，务必先读）：
-#   当前上游 web 版在**启动时**要求**同源 fs 后端**（@noname/server / noname-server 提供的
-#   /checkFile、/readFile、/getFileList、/writeFile 等接口，见 apps/core/noname/init/browser.js）。
-#   GitHub Pages 为纯静态托管，无法提供这些接口 → 游戏会停在
-#   「《无名杀》加载内容失败 / game.checkFile is not a function」（开机探测失败即中止，无降级路径）。
-#   本工作流已解决**部署侧**的全部问题（体积裁剪、清单重建、子路径 importmap 改写、发布链路），
-#   可作为后续「Service Worker 静态后端」等方案的地基。若要在网页端完整游玩，请改用：
-#     ① 本地 / 服务器运行 noname-server（官方网页版运行方式）；或
-#     ② 带后端的托管（例如用 Cloudflare Pages Functions 等实现同一套 fs 接口）。
+# ✅ 可玩性方案（2026-10-11，本地+线上实测）：上游 web 版在**启动时**要求**同源 fs 后端**
+#   （@noname/server / noname-server 提供的 /checkFile、/readFile、/getFileList、/writeFile 等接口，
+#   见 apps/core/noname/init/browser.js）。纯静态托管没有后端，直接跑会停在「加载内容失败」。
+#   本工作流通过两件事让纯静态可玩：
+#     ① Service Worker 静态 fs 后端 shim（.github/pages/sw-shim.js，部署时替换 dist/service-worker.js）：
+#        读 = 静态文件 + asset-manifest.json 索引；写 = Cache API 覆盖层（持久、可读回）；
+#        行为与错误语义对齐 packages/fs/src/index.ts 的参考实现。
+#     ② 子路径不兼容点统一相对化（importmap / game.js / fs 路由 / 内容包路径），详见下方步骤注释。
 
 on:
   # 首版仅手动触发（见顶部说明）
@@ -154,21 +153,18 @@ jobs:
             exit 1
           fi
 
-      - name: Rewrite absolute paths to relative (subpath deployment)
-        # 为什么需要这一步：
-        #   构建产物里的 importmap 与引导脚本使用**根绝对路径**（"/noname.js"、
-        #   "/node_modules/.pnpm/..."、"/noname/entry.js"）。在项目站点（子路径 /noname/）下，
-        #   这些路径会解析到账号根域名并 404，导致所有 `import ... from "vue" / "noname"` 的模块
-        #   （启动页、菜单、运行时 351 个内容包）全部加载失败——实测基线为白屏。
-        #   这里在部署前统一改写为文档相对路径（"./..."），与其余产物（vite base:"./"）一致。
-        #   处理对象：
-        #     ① dist/index.html 的 importmap —— **JSON 语义级**（解析后逐条改写，再解析断言）；
-        #     ② dist/game/game.js 备用引导脚本 —— 内嵌同一份 importmap 与
-        #        `<script src="/noname/entry.js">`；当前没有任何入口引用它（属"死文件"），
-        #        预改写以避免将来入口一旦启用就把白屏问题带回来。
-        #   兜底断言：两文件中若仍出现站内根绝对字符串则直接失败。
-        #   白名单 `"/jit-test.ts"`：它在 try/catch 兜底路径上（非 localhost 恒失败、不中断启动），
-        #   行为与上游一致，故意保留。
+      - name: Rewrite absolute paths to relative + install fs shim (subpath deployment)
+        # 为什么需要这一步（子路径不兼容点统一相对化 + 注入静态 fs 后端）：
+        #   ① index.html 的 importmap / game.js：条目是根绝对路径（"/noname.js"、"…/node_modules/…"），
+        #      子路径下解析到账号根域 404 → 模块加载全挂（实测基线白屏）。
+        #   ② 内容包动态 import（import.js）：`/card/…`、`/character/…`、`/extension/…`、`/mode/…`
+        #      也是根绝对；改成 `../../…`（相对该模块恰好等于站点根，根部署/子路径部署均正确）。
+        #   ③ fs 路由（browser.js）：requestBackend 的 "/checkFile" 等 → "./checkFile"，
+        #      使其落进 Service Worker 作用域、由 shim 接管。
+        #   ④ 用静态 fs 后端 shim（.github/pages/sw-shim.js）替换 dist/service-worker.js：
+        #      读 = 静态文件 + asset-manifest.json 索引；写 = Cache API 覆盖层（持久、可读回）；
+        #      行为与错误语义对齐 packages/fs/src/index.ts 的参考实现。
+        #   以上均带断言兜底：改写后不得残留站内根绝对引用（白名单 "/jit-test.ts"，见 ⑥）。
         run: |
           node <<'NODE'
           const fs = require("fs");
@@ -200,15 +196,74 @@ jobs:
             const before = src;
             src = src.replace(/"([A-Za-z@][^"]*)":\s*"\/(?!\/)([^"]*)"/g, '"$1": "./$2"');
             src = src.replace(/script\.src = "\/(?!\/)([^"]*)"/g, 'script.src = "./$1"');
-            if (src !== before) {
-              fs.writeFileSync(gameFile, src);
-            }
+            if (src !== before) fs.writeFileSync(gameFile, src);
             console.log("game.js 已改写（importmap 条目与 entry.js 引用）");
           } else {
             console.log("game.js 不存在，跳过（上游结构可能已变化）");
           }
 
-          // ③ 兜底断言：除白名单外，不得再出现站内根绝对字符串
+          // ③ fs 路由字面量 → 相对（两个 browser.js 副本，存在即处理）
+          const ROUTES = ["checkFile", "checkDir", "readFile", "readFileAsText", "writeFile", "removeFile", "removeDir", "getFileList", "createDir"];
+          for (const file of ["dist/noname/init/browser.js", "dist/src/noname/init/browser.js"]) {
+            if (!fs.existsSync(file)) {
+              console.log(`${file} 不存在，跳过`);
+              continue;
+            }
+            let src = fs.readFileSync(file, "utf8");
+            let count = 0;
+            for (const route of ROUTES) {
+              const from = `"/${route}"`;
+              count += src.split(from).length - 1;
+              src = src.split(from).join(`"./${route}"`);
+            }
+            fs.writeFileSync(file, src);
+            const left = ROUTES.filter(r => src.includes(`"/${r}"`));
+            if (left.length > 0) {
+              console.error(`::error::${file} 仍存在根绝对路由: ${left.join(", ")}`);
+              process.exit(1);
+            }
+            console.log(`${file}: fs 路由已改写 ${count} 处`);
+          }
+
+          // ④ import.js 内容包路径 → ../../（相对本模块恰好 = 站点根）
+          const importFile = "dist/noname/init/import.js";
+          if (!fs.existsSync(importFile)) {
+            console.error("::error::未找到 dist/noname/init/import.js（上游结构变化，请检查）");
+            process.exit(1);
+          }
+          {
+            let src = fs.readFileSync(importFile, "utf8");
+            let count = 0;
+            for (const seg of ["card", "character", "extension", "mode"]) {
+              const re = new RegExp("`/" + seg + "/", "g");
+              count += (src.match(re) ?? []).length;
+              src = src.replace(re, "`../../" + seg + "/");
+            }
+            fs.writeFileSync(importFile, src);
+            const left = src.match(/`\/(?:card|character|extension|mode)\//g);
+            if (left) {
+              console.error("::error::import.js 仍存在根绝对内容路径: " + [...new Set(left)].join(", "));
+              process.exit(1);
+            }
+            console.log(`import.js: 内容包路径已改写 ${count} 处（→ ../../…）`);
+          }
+
+          // ⑤ 替换 service-worker.js 为静态 fs 后端 shim
+          const shimFile = ".github/pages/sw-shim.js";
+          if (!fs.existsSync(shimFile)) {
+            console.error("::error::缺少 .github/pages/sw-shim.js（fs shim 源文件）");
+            process.exit(1);
+          }
+          fs.copyFileSync(shimFile, "dist/service-worker.js");
+          if (!fs.readFileSync("dist/service-worker.js", "utf8").includes("noname-pages-fs-shim")) {
+            console.error("::error::service-worker.js 替换校验失败");
+            process.exit(1);
+          }
+          console.log("service-worker.js 已替换为静态 fs 后端 shim");
+
+          // ⑥ 兜底断言：index.html / game.js 不得残留站内根绝对字符串
+          //    白名单 "/jit-test.ts"：它在 try/catch 兜底路径上（非 localhost 恒失败、不中断启动），
+          //    行为与上游一致，故意保留。
           const allow = new Set(['"/jit-test.ts"']);
           const leftover = [];
           for (const file of [indexFile, gameFile]) {
