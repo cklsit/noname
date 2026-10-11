@@ -58,6 +58,9 @@ name: Deploy Web to Cloudflare Pages
 #     wss://<本站>/relay?to=<host>:<port>  →  ws://<host>:<port>（透明转发，目标端口需 ≥1024）
 #   游戏内「联机」输入上述 wss 地址即可连接未加密的联机服务器。仅 /relay 走 Functions，
 #   静态路径不受影响（沿用周静态免费额度；Functions 免费额度 10 万请求/天仅中继路径占用）。
+#   ⭐ 产物侧自动改写（v6）：https 页面下，客户端连接逻辑会把 ws:// 目标自动改写为本站中继
+#   ——玩家在游戏内**直接输入纯 IP（如 43.138.118.130）即可联机**，无需手动拼中继地址；
+#   http/本地/桌面版环境不触发（行为保持原样）。
 #
 # 触发方式：GitHub 网页 → Actions → “Deploy Web to Cloudflare Pages” → Run workflow
 #   （或 gh workflow run cloudflare-pages.yml --repo cklsit/noname --ref main）
@@ -342,6 +345,41 @@ jobs:
             process.exit(1);
           }
           console.log("断言通过：无遗留站内根绝对引用（白名单除外）");
+
+          // ⑦ 联机地址自动中继：https 页面下，把 ws:// 目标自动改写为本站中继
+          //    （配合部署物中的 _worker.js 中继层——玩家直接输纯 IP 即可联机；
+          //     http/本地/桌面版环境不触发，行为保持原样；已注入则跳过——幂等）
+          {
+            const CONNECT_RE = /^([ \t]*)const url = tempUrl\.href;/m;
+            for (const file of ["dist/noname/game/index.js", "dist/src/noname/game/index.js"]) {
+              if (!fs.existsSync(file)) {
+                console.log(`${file} 不存在，跳过`);
+                continue;
+              }
+              let src = fs.readFileSync(file, "utf8");
+              if (src.includes("/relay?to=")) {
+                console.log(`${file}: 联机自动中继已注入过，跳过`);
+                continue;
+              }
+              const hits = src.match(new RegExp(CONNECT_RE.source, "gm"));
+              if (!hits || hits.length !== 1) {
+                console.error(`::error::${file} 中 connect 锚点命中 ${hits ? hits.length : 0} 次（期望 1）`);
+                process.exit(1);
+              }
+              src = src.replace(CONNECT_RE, (m, ind) =>
+                `${ind}let url = tempUrl.href;\n` +
+                `${ind}if (location.protocol === "https:" && url.startsWith("ws://")) {\n` +
+                `${ind}  url = \`wss://\${location.host}/relay?to=\${url.slice(5)}\`;\n` +
+                `${ind}}`,
+              );
+              fs.writeFileSync(file, src);
+              if (!src.includes("/relay?to=")) {
+                console.error(`::error::${file} 联机中继注入校验失败`);
+                process.exit(1);
+              }
+              console.log(`${file}: 联机地址自动中继已注入`);
+            }
+          }
           NODE
 
       - name: Generate asset-manifest.json
@@ -478,6 +516,11 @@ jobs:
             exit 1
           fi
           echo "联机中继检查通过（_worker.js + _routes.json）"
+          if ! grep -q "/relay?to=" dist/noname/game/index.js; then
+            echo "::error::联机自动中继未注入（dist/noname/game/index.js 缺少 /relay?to=）"
+            exit 1
+          fi
+          echo "联机自动中继检查通过（产物已注入 ws→中继 改写）"
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
