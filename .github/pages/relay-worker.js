@@ -29,7 +29,14 @@ export default {
 			});
 		}
 
-		const to = url.searchParams.get("to");
+		const to = (() => {
+			let raw = url.searchParams.get("to") || "";
+			try {
+				// 兼容客户端对 to 做了 URL 编码的情形（未编码字符串 decode 后不变）
+				raw = decodeURIComponent(raw);
+			} catch {}
+			return raw;
+		})();
 		if (!to) {
 			return new Response("缺少 ?to=host:port 参数", { status: 400 });
 		}
