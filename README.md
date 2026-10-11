@@ -17,13 +17,14 @@
 
 ### iOS 平台支持
 
-上游仅在安卓端提供移动端支持，本 Fork 通过 **Capacitor 6** 补齐了 iOS：
+上游仅在安卓端提供移动端支持，本 Fork 补齐了 iOS（当前维护分支为 **`feat/ios-support`**，基于 **Capacitor 8.1**）：
 
 - 新增 iOS 文件系统适配层（`apps/mobile/src/fs/ios.ts`），存档、扩展、导出文件全部可用
 - 双平台统一抽象（`apps/mobile/src/fs/types.ts` / `legacy-api.ts`），安卓与 iOS 共用一套回调式 API 映射
 - 解决了 iOS 沙盒的两个关键限制：
   - `WKWebView` 的自定义 scheme **不支持目录列举** → 构建期生成 `asset-manifest.json` 模拟列目录
   - iOS 上 `window.open` 会静默失败 → 改用 `window.location.href`
+- 「边玩边下」素材策略：包内**恒定不含**武将原画与语音（合计约 979 MB），进入游戏后自动在后台按需补齐
 
 ### GitHub Actions 云端构建 IPA（无需 Mac）
 
@@ -31,17 +32,18 @@
 
 | 特性 | 说明 |
 | --- | --- |
-| 运行环境 | GitHub 免费提供的 `macos-15` 云端机器（自带 Xcode 16.x） |
+| 构建分支 | **`feat/ios-support`**（`main` 仍是 Capacitor 6.2 旧线，**不要**用它构建） |
+| 运行环境 | GitHub 免费提供的 `macos-26` 云端机器（自带 Xcode 26.x） |
 | 成本 | **公共仓库完全免费、不限分钟** |
-| 产出 | **未签名** `.ipa`，可直接交给 SideStore / AltStore 用你自己的 Apple ID 重签 |
-| 触发方式 | 仓库 Actions 页面手动触发，或推送 `ios-v*` 标签自动构建 |
-| 资源瘦身 | 可选裁掉语音与立绘，把包体从 2.8GB 压到约 337MB，以满足侧载工具的体积限制 |
+| 产出 | **未签名** `.ipa`，约 **294 MB**，可直接交给 SideStore / AltStore 用你自己的 Apple ID 重签 |
+| 触发方式 | 仓库 Actions 页面手动触发（记得把分支切到 `feat/ios-support`），或推送 `ios-v*` 标签自动构建 |
+| 资源瘦身 | **恒定**裁掉武将语音与立绘：dist 1.6 GB → 裁剪后约 392 MB → ipa 约 294 MB，以满足侧载工具的体积限制 |
 
-工作流文件：[`.github/workflows/ios-build.yml`](./.github/workflows/ios-build.yml)
+工作流文件：[`.github/workflows/ios-build.yml`](https://github.com/cklsit/noname/blob/feat/ios-support/.github/workflows/ios-build.yml)
 
-> 📖 **完整操作步骤（面向零基础）请阅读：[`ios移植-操作手册.md`](./ios移植-操作手册.md)**
+> 📖 **完整操作步骤（面向零基础）请阅读：[`无名杀iOS操作手册.md`](https://github.com/cklsit/noname/blob/main/%E6%97%A0%E5%90%8D%E6%9D%80iOS%E6%93%8D%E4%BD%9C%E6%89%8B%E5%86%8C.md)**
 >
-> 手册内含两条路线的对比（云端构建 / 本地 Mac 构建）、逐步操作指引、以及体积限制、报错排查等注意事项。
+> 手册内含两条路线的对比（云端构建 / 本地 Mac 构建）、逐步操作指引、素材补齐方式、以及体积限制、报错排查等注意事项。
 
 ### 移动端构建命令
 
@@ -67,7 +69,7 @@ pnpm --filter @noname/mobile build:ios       # 在 Mac 上生成 iOS 包
 | 目录 | 说明 |
 | --- | --- |
 | `apps/core` | 游戏核心（`noname`，纯前端，Chromium ≥ 91 / Safari ≥ 16.4） |
-| `apps/mobile` | 移动端封装（Capacitor 6，支持 **Android + iOS**） |
+| `apps/mobile` | 移动端封装（支持 **Android + iOS**；iOS 出包走 **`feat/ios-support`**） |
 | `apps/electron` | Electron 桌面端封装 |
 | `packages` | 可复用的工具包与扩展 |
 | `scripts` | 构建与开发脚本 |
