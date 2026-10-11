@@ -1,7 +1,8 @@
 name: Deploy Web to Cloudflare Pages
 
 # 用途：把《无名杀》网页版（apps/core 的 Vite 产物 dist/）发布到 Cloudflare Pages
-#       站点地址：https://noname.pages.dev/（项目名 noname；可另绑自定义域名）
+#       站点地址：https://noname-cje.pages.dev/（项目名 noname；noname.pages.dev 已被占用，
+#       CF 自动分配了 noname-cje 子域；可另绑自定义域名）
 #
 # 为什么从 GitHub Pages 迁移到 Cloudflare Pages（2026-10-11）：
 #   ① GitHub Pages 单站点硬上限 1 GB → 被迫裁掉全部武将语音（audio/skill 470 MiB +
@@ -15,7 +16,7 @@ name: Deploy Web to Cloudflare Pages
 # 部署方式：Direct Upload（构建在 GitHub Actions，产物直传 Cloudflare）
 #   - 不做 Cloudflare 侧的 Git 集成构建：本仓库的产物需要多步后处理（见下方改写步骤），
 #     且直传部署**不计入** Cloudflare 的 500 次/月构建配额；
-#   - 首次部署前需存在 Pages 项目（wrangler 不会自动创建）：
+#   - Pages 项目已创建（2026-10-11：noname，production_branch=main）；如需重建：
 #       npx wrangler pages project create noname --production-branch=main
 #   - 需要两个仓库 Secrets：
 #       CLOUDFLARE_API_TOKEN  （最小权限：Account → Cloudflare Pages → Edit）
@@ -37,6 +38,17 @@ name: Deploy Web to Cloudflare Pages
 #        说明：Cloudflare Pages 为**根路径部署**、GitHub Pages 为子路径部署；上述改写均使用
 #        "./" 或 "../../" 相对形式，两种部署布局下解析结果都正确（已在 GitHub Pages 全量验证），
 #        因此本工作流与旧 pages.yml 共用同一套产物后处理逻辑。
+#
+# ⚠️ 两个平台特性与对策（2026-10-11 首次部署实测，v2 修正）：
+#   ① wrangler 上传有**硬编码忽略清单**（含 "**/node_modules"，不可配置）→ dist/node_modules
+#      里的模块文件（vue / pinyin-pro / dedent / crypto-js…，共 120 个）不会被上传，
+#      importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。对策：部署前把 node_modules
+#      改名 vendor 并全量替换文本引用（vendor 不在忽略清单内，见 Vendor rename 步骤）。
+#   ② asset-manifest.json 不是 pnpm build 的产物（源码树无生成者），是「静态部署侧」产物
+#      （SW fs shim 的目录索引）。GitHub Pages 版由旧工作流的「裁减后重建」步骤顺手生成；
+#      本工作流不裁减，须显式生成（否则 shim 索引为空，目录列举能力缺失，见 Generate 步骤）。
+#   另：CF Pages 对未匹配路径默认回退 index.html（200，SPA 行为）——对游戏无影响
+#      （SW 未激活时 fs 探测本就失败走兜底；激活后由 SW 接管）。
 #
 # 触发方式：GitHub 网页 → Actions → “Deploy Web to Cloudflare Pages” → Run workflow
 #   （或 gh workflow run cloudflare-pages.yml --repo cklsit/noname --ref main）
@@ -90,6 +102,111 @@ jobs:
           NONAME_BUILD_CHANNEL: test
           NONAME_BUILD_COMMIT: ${{ github.sha }}
         run: pnpm build
+
+      - name: Vendor rename (bypass wrangler's node_modules exclusion)
+        # 为什么需要这一步（2026-10-11 首次部署实测）：
+        #   wrangler 对 Pages 上传有**硬编码忽略清单**（含 "**/node_modules"，不可配置）→
+        #   dist/node_modules 的模块文件（vue / pinyin-pro / dedent / crypto-js…）不会被上传，
+        #   importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。
+        #   对策：把目录改名为 vendor（不在忽略清单内）并全量替换文本引用。
+        #   ⚠️ 关键：pnpm 结构里包目录**内含二级 node_modules**（形如
+        #   .pnpm/<pkg>@<ver>/node_modules/<pkg>/…），引用里出现的这些"内层 node_modules 段"
+        #   必须与文件系统保持一致 —— 因此内层同名目录也一并改名为 vendor
+        #   （只做字符串替换而不改目录会导致引用失配，2026-10-11 本地实测踩过）。
+        #   断言：① 全 dist 文本文件无 "node_modules/" 残留；
+        #         ② index.html 的 importmap 与 src/href 引用必须命中真实文件（存在性校验，
+        #            防"替换过度/不足"这类静态失配）。
+        run: |
+          node <<'NODE'
+          const fs = require("fs"), path = require("path");
+
+          const FROM = "dist/node_modules", TO = "dist/vendor";
+          if (!fs.existsSync(FROM)) {
+            console.error("::error::dist/node_modules 不存在（上游构建结构可能已变化）");
+            process.exit(1);
+          }
+          fs.renameSync(FROM, TO);
+          console.log(`目录改名：${FROM} → ${TO}`);
+
+          // 内层同名目录一并改名（与引用替换保持一致）
+          let innerRenamed = 0;
+          (function walkDirs(dir) {
+            for (const name of fs.readdirSync(dir)) {
+              const abs = path.join(dir, name);
+              if (!fs.lstatSync(abs).isDirectory()) continue;
+              if (name === "node_modules") {
+                const target = path.join(dir, "vendor");
+                if (fs.existsSync(target)) {
+                  console.error(`::error::改名冲突：${target} 已存在`);
+                  process.exit(1);
+                }
+                fs.renameSync(abs, target);
+                innerRenamed += 1;
+                walkDirs(target);
+              } else {
+                walkDirs(abs);
+              }
+            }
+          })(TO);
+          console.log(`内层 node_modules 目录改名：${innerRenamed} 个`);
+
+          // 只处理文本文件（二进制绝不触碰）
+          const TEXT_EXT = new Set([".js", ".mjs", ".cjs", ".json", ".html", ".htm", ".css", ".ts", ".map", ".txt", ".md"]);
+          function walkText(dir, fn) {
+            for (const name of fs.readdirSync(dir)) {
+              const abs = path.join(dir, name);
+              const st = fs.statSync(abs);
+              if (st.isDirectory()) { walkText(abs, fn); continue; }
+              if (TEXT_EXT.has(path.extname(name).toLowerCase())) fn(abs);
+            }
+          }
+
+          let total = 0, changed = 0;
+          walkText("dist", abs => {
+            total += 1;
+            const src = fs.readFileSync(abs, "utf8");
+            if (!src.includes("node_modules/")) return;
+            fs.writeFileSync(abs, src.split("node_modules/").join("vendor/"));
+            changed += 1;
+          });
+          console.log(`文本替换：扫描 ${total} 个文本文件，改写 ${changed} 个`);
+
+          const leftovers = [];
+          walkText("dist", abs => {
+            if (fs.readFileSync(abs, "utf8").includes("node_modules/")) leftovers.push(abs);
+          });
+          if (leftovers.length > 0) {
+            console.error("::error::仍有文件引用 node_modules/：\n" + leftovers.slice(0, 20).join("\n"));
+            process.exit(1);
+          }
+          console.log("断言①通过：全 dist 文本文件无 node_modules/ 残留");
+
+          // 断言②：index.html 引用-存在性校验（importmap + src/href）
+          const html = fs.readFileSync("dist/index.html", "utf8");
+          const urls = [];
+          const im = html.match(/<script type="importmap">([\s\S]*?)<\/script>/);
+          if (!im) {
+            console.error("::error::index.html 中未找到 importmap");
+            process.exit(1);
+          }
+          for (const v of Object.values(JSON.parse(im[1]).imports ?? {})) urls.push(v);
+          for (const m of html.matchAll(/(?:src|href)="([^"]+)"/g)) urls.push(m[1]);
+
+          const missing = [];
+          for (const u of urls) {
+            if (/^(?:https?:|data:|#|\/\/)/.test(u)) continue;
+            // 裸说明符（如上游产物中存在的 <script type="module" src="vue">）由 importmap
+            // 负责解析，不适用文件系统校验，跳过（该形态为上游产物固有，多轮线上验证无害）。
+            if (!u.includes("/")) continue;
+            const rel = u.split("?")[0].split("#")[0].replace(/^\.?\//, "");
+            if (rel && !fs.existsSync(path.join("dist", rel))) missing.push(u);
+          }
+          if (missing.length > 0) {
+            console.error("::error::index.html 引用的资源在 dist 中不存在（替换失配）：\n" + missing.join("\n"));
+            process.exit(1);
+          }
+          console.log(`断言②通过：index.html 引用-存在性校验（${urls.length} 条引用全部命中）`);
+          NODE
 
       - name: Rewrite absolute paths to relative + install fs shim
         # 为什么需要这一步（路径不兼容点统一相对化 + 注入静态 fs 后端）：
@@ -218,6 +335,33 @@ jobs:
           console.log("断言通过：无遗留站内根绝对引用（白名单除外）");
           NODE
 
+      - name: Generate asset-manifest.json
+        # 为什么需要这一步（2026-10-11 首次部署实测）：
+        #   asset-manifest.json **不是** pnpm build 的产物（源码树中无生成者）——它是
+        #   「静态部署侧」产物：运行时 SW fs shim 读取它作为目录索引（getFileList 的数据源，
+        #   模拟列目录）。GitHub Pages 版之所以有它，是因为旧工作流的「裁减后重建」步骤
+        #   顺手生成；本工作流不裁减，因此需要显式生成（否则 shim 索引为空 → 列目录能力缺失）。
+        #   忽略清单与 iOS 工作流口径一致（含 vendor：模块目录不作为内容文件列出；
+        #   shim 对未索引文件仍有 staticFileExists（HEAD）兜底，不影响模块加载）。
+        run: |
+          ROOT=dist node -e "
+          const fs=require('fs'),path=require('path');
+          const root=process.env.ROOT, out=path.resolve(root,'asset-manifest.json');
+          const ignored=new Set(['asset-manifest.json','asset-download-manifest.json','preload.js','_headers','_redirects','_routes.json','_worker.js','node_modules','vendor']);
+          const entries=[];
+          (function walk(dir){
+            for(const name of fs.readdirSync(dir)){
+              if(ignored.has(name)) continue;
+              const abs=path.join(dir,name);
+              if(fs.statSync(abs).isDirectory()){ walk(abs); continue; }
+              entries.push(path.relative(root,abs).split(path.sep).join('/'));
+            }
+          })(root);
+          entries.sort();
+          fs.writeFileSync(out, JSON.stringify(entries)+'\n');
+          console.log(root + ' asset-manifest.json: ' + entries.length + ' entries');
+          "
+
       - name: Write _headers (fresh service worker & manifest)
         # 为什么需要 _headers：
         #   ① 上游注册 SW 时带 updateViaCache:"all"（src 见 index.html），浏览器检查 SW 更新时
@@ -258,6 +402,27 @@ jobs:
           echo "===== 产物总览 ====="
           du -sh dist
           du -sh dist/* 2>/dev/null | sort -rh | head -10
+
+          # 新增断言（v2）：asset-manifest.json 与 vendor 结构
+          if [ ! -f dist/asset-manifest.json ]; then
+            echo "::error::asset-manifest.json 缺失（Generate 步骤未生效）"
+            exit 1
+          fi
+          MANIFEST_COUNT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('dist/asset-manifest.json','utf8')).length)")
+          echo "asset-manifest.json: $MANIFEST_COUNT 条"
+          if [ "$MANIFEST_COUNT" -lt 15000 ]; then
+            echo "::error::asset-manifest.json 条目数异常（$MANIFEST_COUNT < 15000）"
+            exit 1
+          fi
+          if [ ! -d dist/vendor ]; then
+            echo "::error::dist/vendor 缺失（Vendor rename 未生效）"
+            exit 1
+          fi
+          if [ -d dist/node_modules ]; then
+            echo "::error::dist/node_modules 仍存在（未被改名）"
+            exit 1
+          fi
+          echo "vendor 结构检查通过（node_modules 已改名）"
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
