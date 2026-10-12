@@ -83,6 +83,14 @@ concurrency:
   group: "cloudflare-pages"
   cancel-in-progress: false
 
+# 联机中继固定域名（唯一取值来源）：
+#   玩家在游戏内「联机」只输纯 IP 时，产物侧会把它改写为
+#   wss://<NONAME_RELAY_HOST>/?to=<ip:port>，指向 NAS 上的命名隧道中继。
+#   ⚠️ 待用户提供 CF 凭据后把下方占位符替换为真实域名（如 relay.example.com）；
+#      只改这一处即可，注入步骤会读取该 env。
+env:
+  NONAME_RELAY_HOST: "RELAY_HOST_PLACEHOLDER"
+
 jobs:
   build-deploy:
     name: Build & Deploy
@@ -346,10 +354,14 @@ jobs:
           }
           console.log("断言通过：无遗留站内根绝对引用（白名单除外）");
 
-          // ⑦ 联机地址自动中继：https 页面下，把 ws:// 目标自动改写为本站中继
-          //    （配合部署物中的 _worker.js 中继层——玩家直接输纯 IP 即可联机；
-          //     http/本地/桌面版环境不触发，行为保持原样；已注入则跳过——幂等）
+          // ⑦ 联机地址自动中继：https 页面下，把 ws:// 目标自动改写为「固定域名中继」
+          //    （中继 = NAS 上的命名隧道 + relay-server.mjs；根路径 + ?to= 形态；
+          //     玩家直接输纯 IP 即可联机；http/本地/桌面版环境不触发，行为保持原样；
+          //     已注入则跳过——幂等）
+          //    说明：NONAME_RELAY_HOST 由 workflow 顶层 env 提供（唯一取值来源），
+          //    注入进产物的是**字符串字面量**，运行时无需读取任何变量。
           {
+            const RELAY_HOST = process.env.NONAME_RELAY_HOST || "RELAY_HOST_PLACEHOLDER";
             const CONNECT_RE = /^([ \t]*)const url = tempUrl\.href;/m;
             for (const file of ["dist/noname/game/index.js", "dist/src/noname/game/index.js"]) {
               if (!fs.existsSync(file)) {
@@ -357,7 +369,7 @@ jobs:
                 continue;
               }
               let src = fs.readFileSync(file, "utf8");
-              if (src.includes("/relay?to=")) {
+              if (src.includes("NONAME_RELAY_HOST")) {
                 console.log(`${file}: 联机自动中继已注入过，跳过`);
                 continue;
               }
@@ -367,17 +379,19 @@ jobs:
                 process.exit(1);
               }
               src = src.replace(CONNECT_RE, (m, ind) =>
+                `${ind}// 联机中继固定域名（命名隧道；地址永不变化）\n` +
+                `${ind}const NONAME_RELAY_HOST = ${JSON.stringify(RELAY_HOST)};\n` +
                 `${ind}let url = tempUrl.href;\n` +
                 `${ind}if (location.protocol === "https:" && url.startsWith("ws://")) {\n` +
-                `${ind}  url = \`wss://\${location.host}/relay?to=\${url.slice(5)}\`;\n` +
+                `${ind}  url = \`wss://\${NONAME_RELAY_HOST}/?to=\${url.slice(5)}\`;\n` +
                 `${ind}}`,
               );
               fs.writeFileSync(file, src);
-              if (!src.includes("/relay?to=")) {
+              if (!src.includes("NONAME_RELAY_HOST")) {
                 console.error(`::error::${file} 联机中继注入校验失败`);
                 process.exit(1);
               }
-              console.log(`${file}: 联机地址自动中继已注入`);
+              console.log(`${file}: 联机地址自动中继已注入（固定域名 ${RELAY_HOST}）`);
             }
           }
           NODE
@@ -516,11 +530,11 @@ jobs:
             exit 1
           fi
           echo "联机中继检查通过（_worker.js + _routes.json）"
-          if ! grep -q "/relay?to=" dist/noname/game/index.js; then
-            echo "::error::联机自动中继未注入（dist/noname/game/index.js 缺少 /relay?to=）"
+          if ! grep -q "NONAME_RELAY_HOST" dist/noname/game/index.js; then
+            echo "::error::联机自动中继未注入（dist/noname/game/index.js 缺少 NONAME_RELAY_HOST）"
             exit 1
           fi
-          echo "联机自动中继检查通过（产物已注入 ws→中继 改写）"
+          echo "联机自动中继检查通过（产物已注入 ws→固定域名中继 改写）"
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
