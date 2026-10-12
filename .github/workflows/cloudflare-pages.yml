@@ -389,7 +389,7 @@ jobs:
                 `${ind}const NONAME_RELAY_HOST = ${JSON.stringify(RELAY_HOST)};\n` +
                 `${ind}let url = tempUrl.href;\n` +
                 `${ind}if (location.protocol === "https:" && url.startsWith("ws://")) {\n` +
-                `${ind}  url = \`wss://\${NONAME_RELAY_HOST}/?to=\${url.slice(5)}\`;\n` +
+                `${ind}  url = \`wss://\${NONAME_RELAY_HOST}/?to=\${url.slice(5).replace(/\\/+$/, "")}\`;\n` +
                 `${ind}}`,
               );
               fs.writeFileSync(file, src);
