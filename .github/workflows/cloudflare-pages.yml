@@ -92,10 +92,10 @@ concurrency:
 # 联机中继固定域名（唯一取值来源）：
 #   玩家在游戏内「联机」只输纯 IP 时，产物侧会把它改写为
 #   wss://<NONAME_RELAY_HOST>/?to=<ip:port>，指向 NAS 上的命名隧道中继。
-#   ⚠️ 待用户提供 CF 凭据后把下方占位符替换为真实域名（如 relay.example.com）；
-#      只改这一处即可，注入步骤会读取该 env。
+#   已配置
+#   ⚠️ 更换中继域名时只改这一处即可，注入步骤会读取该 env。
 env:
-  NONAME_RELAY_HOST: "RELAY_HOST_PLACEHOLDER"
+  NONAME_RELAY_HOST: "relay.nngame.de5.net"
 
 jobs:
   build-deploy:
@@ -367,7 +367,7 @@ jobs:
           //    说明：NONAME_RELAY_HOST 由 workflow 顶层 env 提供（唯一取值来源），
           //    注入进产物的是**字符串字面量**，运行时无需读取任何变量。
           {
-            const RELAY_HOST = process.env.NONAME_RELAY_HOST || "RELAY_HOST_PLACEHOLDER";
+            const RELAY_HOST = process.env.NONAME_RELAY_HOST || "relay.nngame.de5.net";
             const CONNECT_RE = /^([ \t]*)const url = tempUrl\.href;/m;
             for (const file of ["dist/noname/game/index.js", "dist/src/noname/game/index.js"]) {
               if (!fs.existsSync(file)) {
