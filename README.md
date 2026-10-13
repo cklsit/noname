@@ -56,7 +56,7 @@ pnpm --filter @noname/mobile build:ios       # 在 Mac 上生成 iOS 包
 
 上游网页版需要自建 `noname-server`（同源文件系统后端）才能完成启动；本 Fork 将其改造为**纯静态托管即可直接游玩**：
 
-- **在线地址：<https://noname-cje.pages.dev/>** —— 打开即玩，无需下载安装
+- **在线地址：<https://nngame.de5.net/>**（备用：<https://noname-cje.pages.dev/>）—— 打开即玩，无需下载安装
 - 部署方式：[`.github/workflows/cloudflare-pages.yml`](https://github.com/cklsit/noname/blob/main/.github/workflows/cloudflare-pages.yml)（在 Actions 页面手动触发）
 - 核心改造：
   - **Service Worker 静态文件系统后端**（[`.github/pages/sw-shim.js`](https://github.com/cklsit/noname/blob/main/.github/pages/sw-shim.js)）：在纯静态环境中仿真上游启动所必需的 `/checkFile`、`/readFile`、`/writeFile` 等接口——读取走「静态文件 + `asset-manifest.json` 索引」，写入（存档、设置）保存在浏览器缓存层
@@ -72,7 +72,7 @@ pnpm --filter @noname/mobile build:ios       # 在 Mac 上生成 iOS 包
 浏览器的安全策略禁止 **HTTPS 页面直连未加密的 `ws://` 联机服务器**（混合内容拦截），而社区联机服务器大多只提供 `ws://`。本 Fork 的网页版联机处理方式：
 
 - **服务器提供加密**：在「联机」输入框填 `wss://服务器地址:端口` 直接连接
-- **服务器只有 `ws://`**：**只输服务器地址即可**——客户端会自动经中继转发。例如直接输入 `43.138.118.130`；若服务器非默认端口，输入 `IP:端口`（如 `43.138.118.130:9000`）。中继由本 Fork 部署方在自有服务器上运行（云端加密隧道 + 中继服务，对外为固定地址的中继入口）
+- **服务器只有 `ws://`**：**只输服务器地址即可**——客户端会自动经中继转发。例如直接输入 `43.138.118.130`；若服务器非默认端口，输入 `IP:端口`（如 `43.138.118.130:9000`）。中继由本 Fork 部署方在自有服务器上运行（云端加密隧道 + 中继服务，对外为**固定地址** `wss://relay.nngame.de5.net/`——地址恒定不变，与容器 / 服务器重启无关）
 - 本地版 / 桌面版不受此限制，按原有方式直接填地址即可
 
 > ⚠️ 限制与说明：
