@@ -1,8 +1,11 @@
 name: Deploy Web to Cloudflare Pages
 
 # 用途：把《无名杀》网页版（apps/core 的 Vite 产物 dist/）发布到 Cloudflare Pages
-#       站点地址：https://noname-cje.pages.dev/（项目名 noname；noname.pages.dev 已被占用，
-#       CF 自动分配了 noname-cje 子域；可另绑自定义域名）
+#       主站：https://nngame.de5.net/（自定义域，2026-10-13 绑定）
+#       备用：https://noname-cje.pages.dev/（项目名 noname）
+#
+# 所在分支：**feat/web-pages**（2026-10-13 从 main 迁出；此前与 iOS 线共用 main，
+#   为免两套部署互相牵动而独立成支。main 上的同名文件已删除）
 #
 # 为什么从 GitHub Pages 迁移到 Cloudflare Pages（2026-10-11）：
 #   ① GitHub Pages 单站点硬上限 1 GB → 被迫裁掉全部武将语音（audio/skill 470 MiB +
@@ -16,8 +19,10 @@ name: Deploy Web to Cloudflare Pages
 # 部署方式：Direct Upload（构建在 GitHub Actions，产物直传 Cloudflare）
 #   - 不做 Cloudflare 侧的 Git 集成构建：本仓库的产物需要多步后处理（见下方改写步骤），
 #     且直传部署**不计入** Cloudflare 的 500 次/月构建配额；
-#   - Pages 项目已创建（2026-10-11：noname，production_branch=main）；如需重建：
+#   - Pages 项目已创建（2026-10-11：noname，production_branch=**main**）；如需重建：
 #       npx wrangler pages project create noname --production-branch=main
+#     ⚠️ production_branch 保持 main（与下方 --branch=main 配套）；本工作流传在
+#        feat/web-pages 分支上运行，但部署仍标记为生产部署，自定义域不受影响。
 #   - 需要两个仓库 Secrets：
 #       CLOUDFLARE_API_TOKEN  （最小权限：Account → Cloudflare Pages → Edit）
 #       CLOUDFLARE_ACCOUNT_ID （32 位 hex，Cloudflare 控制台 Account Home 可见）
@@ -77,11 +82,11 @@ name: Deploy Web to Cloudflare Pages
 #   （或 gh workflow run cloudflare-pages.yml --repo cklsit/noname --ref main）
 
 on:
-  # 首版仅手动触发；验证稳定后，取消下面三行的注释即可实现 main 更新后自动部署：
+  # 首版仅手动触发；验证稳定后，取消下面三行的注释即可实现更新后自动部署：
   workflow_dispatch:
 
   # push:
-  #   branches: [main]
+  #   branches: [feat/web-pages]
 
 # 最小权限：仅读取仓库源码（部署凭据走 CLOUDFLARE_API_TOKEN secret，不用 OIDC）
 permissions:
@@ -581,8 +586,11 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
-        #   --branch=main 显式声明生产分支（CI 检出为 detached HEAD，需手动指定；
-        #   与项目创建时的 --production-branch=main 匹配才算生产部署）。
+        #   --branch=main **有意保留**（勿改成 feat/web-pages）：wrangler 以此值与
+        #   Pages 项目的 production_branch 比对，**只有与项目设置一致（=main）才记为
+        #   生产部署**，才会挂到自定义域 nngame.de5.net。CI 检出为 detached HEAD，
+        #   必须显式指定分支名（不能省略）。若将来把项目 production_branch 改成
+        #   feat/web-pages，此处须同步改，否则会退化为「预览部署」（不带自定义域）。
         #   npx 锁大版本 4，避免上游 breaking change。
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
