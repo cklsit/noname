@@ -216,28 +216,10 @@ jobs:
 
           # 资源变了，asset-manifest.json 必须同步重建（dist 与 iOS 工程两份都要），
           # 否则运行时会尝试读取已删除的文件。
-          rebuild_manifest() {
-            ROOT="$1" node -e "
-          const fs=require('fs'),path=require('path');
-          const root=process.env.ROOT, out=path.resolve(root,'asset-manifest.json');
-          const ignored=new Set(['asset-manifest.json','preload.js','node_modules']);
-          const entries=[];
-          (function walk(dir){
-            for(const name of fs.readdirSync(dir)){
-              if(ignored.has(name)) continue;
-              const abs=path.join(dir,name);
-              if(fs.statSync(abs).isDirectory()){ walk(abs); continue; }
-              entries.push(path.relative(root,abs).split(path.sep).join('/'));
-            }
-          })(root);
-          entries.sort();
-          fs.writeFileSync(out, JSON.stringify(entries)+'\n');
-          console.log(root + ' asset-manifest.json: ' + entries.length + ' entries');
-          "
-          }
-
-          rebuild_manifest "$DIST"
-          if [ -d "$PUBLIC" ]; then rebuild_manifest "$PUBLIC"; fi
+          # 清单的唯一实现是 scripts/asset-manifest.ts（afterSync.ts 也调用它），
+          # 这里复用同一个脚本 —— 免得「构建」与「CI 瘦身」各留一份规则后逐渐漂移。
+          pnpm run manifest "$DIST"
+          if [ -d "$PUBLIC" ]; then pnpm run manifest "$PUBLIC"; fi
 
           # 把裁剪后的 dist（含新清单）覆盖同步到 iOS 工程。
           # preload.js 未变化，无需重建。

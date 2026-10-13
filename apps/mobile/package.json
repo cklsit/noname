@@ -9,9 +9,11 @@
   ],
   "scripts": {
     "sync": "tsx afterSync.ts",
+    "manifest": "tsx scripts/asset-manifest.ts",
     "build:android": "tsx buildAndroid.ts",
     "build:ios": "tsx buildIos.ts",
-    "lint": "pnpm eslint src/**"
+    "typecheck": "pnpm tsc --noEmit -p tsconfig.json",
+    "lint": "pnpm eslint src/** *.ts scripts/**"
   },
   "dependencies": {
     "@capacitor/android": "^6.2.0",

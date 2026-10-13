@@ -1,7 +1,9 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
-import { relative, resolve, sep, posix } from "path";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
+import { resolve } from "path";
 import { spawnSync } from "child_process";
 import { build } from "vite";
+
+import { writeAssetManifest } from "./scripts/asset-manifest.js";
 
 const root = import.meta.dirname;
 const workspaceRoot = resolve(root, "../..");
@@ -83,40 +85,13 @@ function patchAndroidAssets() {
 	renameSync(pnpmDir, androidSafePnpmDir);
 }
 
-/**
- * 生成内置资源清单 `dist/asset-manifest.json`。
- *
- * iOS 的 WKWebView 自定义 scheme 不支持目录列举，运行时的 `getFileList`
- * （游戏靠它扫描 mode/character/card 等目录）只能依赖这份构建期清单。
- * 清单必须存在于 dist 内、且在 `cap sync` 之前写盘，才会被同步进 iOS 工程。
- */
-function writeAssetManifest() {
-	const entries: string[] = [];
-	const ignored = new Set(["asset-manifest.json", "preload.js", "node_modules"]);
-
-	const collect = (dir: string) => {
-		for (const name of readdirSync(dir)) {
-			if (ignored.has(name)) continue;
-
-			const absolute = resolve(dir, name);
-			if (statSync(absolute).isDirectory()) {
-				collect(absolute);
-				continue;
-			}
-
-			// 统一为 POSIX 分隔符，保证运行时按前缀过滤不受平台影响
-			entries.push(relative(distDir, absolute).split(sep).join(posix.sep));
-		}
-	};
-
-	collect(distDir);
-	entries.sort();
-
-	writeFileSync(resolve(distDir, "asset-manifest.json"), `${JSON.stringify(entries)}\n`, "utf8");
-	console.log(`asset-manifest.json written: ${entries.length} entries`);
-}
-
 await buildPreload();
-writeAssetManifest();
+
+// 生成内置资源清单 dist/asset-manifest.json：
+// iOS 侧 WKWebView 不支持目录列举，运行时 getFileList 只能读这份构建期清单；
+// 且必须在 cap sync 之前写盘，才会被同步进 iOS 工程。
+// 实现见 scripts/asset-manifest.ts —— 该文件同时也是 CI 瘦身步骤的唯一实现，避免两份规则漂移。
+console.log(`asset-manifest.json written: ${writeAssetManifest(distDir)} entries`);
+
 capSync();
 patchAndroidAssets();
