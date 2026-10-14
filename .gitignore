@@ -21,14 +21,8 @@ Thumbs.db
 # Skill for private use
 .agents/skills/*-selfuse
 
-# WorkBuddy 工作记忆（本地辅助数据，不入库）
-.workbuddy/
-
 # Capacitor 生成的 iOS 原生工程（体积大、可由 `npx cap add ios` 重新生成）
 apps/mobile/ios/
-
-# Claude 的本地工作树（是整份仓库的完整副本，绝不能入库）
-.claude/worktrees/
 
 # 本地调研文档（只放本地参考，不入库）
 无名杀*.md
