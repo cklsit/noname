@@ -57,9 +57,9 @@ pnpm --filter @noname/mobile build:ios       # 在 Mac 上生成 iOS 包
 上游网页版需要自建 `noname-server`（同源文件系统后端）才能完成启动；本 Fork 将其改造为**纯静态托管即可直接游玩**：
 
 - **在线地址：<https://nngame.de5.net/>**（备用：<https://noname-cje.pages.dev/>）—— 打开即玩，无需下载安装
-- 部署方式：[`.github/workflows/cloudflare-pages.yml`](https://github.com/cklsit/noname/blob/main/.github/workflows/cloudflare-pages.yml)（在 Actions 页面手动触发）
+- 部署方式：[`.github/workflows/cloudflare-pages.yml`](https://github.com/cklsit/noname/blob/feat/web-pages/.github/workflows/cloudflare-pages.yml)（在 Actions 页面手动触发）
 - 核心改造：
-  - **Service Worker 静态文件系统后端**（[`.github/pages/sw-shim.js`](https://github.com/cklsit/noname/blob/main/.github/pages/sw-shim.js)）：在纯静态环境中仿真上游启动所必需的 `/checkFile`、`/readFile`、`/writeFile` 等接口——读取走「静态文件 + `asset-manifest.json` 索引」，写入（存档、设置）保存在浏览器缓存层
+  - **Service Worker 静态文件系统后端**（[`.github/pages/sw-shim.js`](https://github.com/cklsit/noname/blob/feat/web-pages/.github/pages/sw-shim.js)）：在纯静态环境中仿真上游启动所必需的 `/checkFile`、`/readFile`、`/writeFile` 等接口——读取走「静态文件 + `asset-manifest.json` 索引」，写入（存档、设置）保存在浏览器缓存层
   - **部署路径适配**：`importmap`、文件系统路由与内容包加载路径在构建期统一相对化
 
 > ⚠️ 限制与须知：
