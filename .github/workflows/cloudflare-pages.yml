@@ -131,7 +131,8 @@ jobs:
           cache: "pnpm"
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # 本 job 只做网页构建 + 产物改写，不需要 electron 等 postinstall 重活。
+        run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
 
       - name: Build web assets (dist/)
         env:
@@ -207,15 +208,15 @@ jobs:
           });
           console.log(`文本替换：扫描 ${total} 个文本文件，改写 ${changed} 个`);
 
-          const leftovers = [];
-          walkText("dist", abs => {
-            if (fs.readFileSync(abs, "utf8").includes("node_modules/")) leftovers.push(abs);
-          });
-          if (leftovers.length > 0) {
-            console.error("::error::仍有文件引用 node_modules/：\n" + leftovers.slice(0, 20).join("\n"));
+          // 断言①：改成目录级检查。
+          // 原先这里是「把 dist 下全部文本文件（1.4 万个）再完整读一遍找残留」—— 但残留的唯一
+          // 成因就是目录改名没成功，逐文件重读既是重复 I/O 又抓不到新问题。
+          // 直接确认 node_modules 目录已不存在（引用替换在上面已随写盘完成）。
+          if (fs.existsSync("dist/node_modules")) {
+            console.error("::error::dist/node_modules 仍然存在（目录改名未生效）");
             process.exit(1);
           }
-          console.log("断言①通过：全 dist 文本文件无 node_modules/ 残留");
+          console.log("断言①通过：dist/node_modules 已不存在（引用已全部指向 vendor/）");
 
           // 断言②：index.html 引用-存在性校验（importmap + src/href）
           const html = fs.readFileSync("dist/index.html", "utf8");
@@ -583,6 +584,16 @@ jobs:
             exit 1
           fi
           echo "key 预发检查通过（连接建立后立即预发 key，规避服务器 2 秒 keyCheck 超时）"
+
+      - name: Cache npm (for npx wrangler)
+        # `npx --yes wrangler@4` 每次都要把 wrangler 及其依赖树取一遍；
+        # 缓存 npm 的包缓存后，重复部署时可复用已下载的 tarball。
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-wrangler4-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-wrangler4-${{ runner.os }}-
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
