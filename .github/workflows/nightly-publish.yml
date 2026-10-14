@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write  # 允许 Actions 推送代码到仓库
 
+# 并发控制：定时任务与手动触发叠在一起时只跑最新的一次（夜间快照，新的取代旧的）。
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
   publish:
     name: Nightly Publish
@@ -30,7 +35,9 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # 本 job 只做网页构建 + 打测试包（generateTestPack 内部就是 pnpm build），
+        # 不需要 electron 等 postinstall 重活。
+        run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
 
       - name: Resolve Nightly Metadata
         id: info

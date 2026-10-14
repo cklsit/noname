@@ -84,7 +84,8 @@ jobs:
 
       - name: Install dependencies
         # --ignore-scripts 跳过 electron 等无关平台重活，加快安装
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        # --prefer-offline 优先命中 setup-node 恢复的 pnpm store（版本仍由 lockfile 锁定）
+        run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
 
       - name: Disk after install
         run: df -h /
@@ -100,6 +101,57 @@ jobs:
           df -h /
           du -sh dist
 
+      # ⚠️ 位置很关键：必须在 `cap add ios` / `pnpm sync` **之前**裁剪 dist。
+      #   原先的顺序是「全量同步进 iOS 工程 → 再裁剪 dist 与已同步的那一份 → 再 cap copy 覆盖」，
+      #   相当于先把约 955MB 用不到的语音与立绘拷进 ios/App/App/public，随后又删掉，
+      #   还多跑一次 cap copy + 手工重建两份 asset-manifest.json。
+      #   改成「先裁剪 dist 再同步」后：这些文件从未被拷贝；清单由紧随其后的 `pnpm sync`
+      #   （afterSync.ts → apps/mobile/scripts/asset-manifest.ts）按裁剪后的 dist 自动生成。
+      - name: Slim assets (optional)
+        if: github.event_name == 'push' || inputs.slim_assets
+        run: |
+          # 侧载工具对未压缩 App 体积非常敏感：
+          #   - AltStore 未打补丁时 >300MB 的 ipa 直接报 Bad Allocation
+          #   - 即使打 4GB patch，Apple 侧未压缩 App 硬上限仍是 4GB
+          # 本仓库全量资源约 2.8GB，不裁剪几乎必然装不上。
+          #
+          # 裁掉的资源体积最大、且缺失不影响可玩性（自动保留必需占位图）：
+          #   audio/skill       457M  武将技能语音（全为 mp3，整目录删）
+          #   audio/die         108M  阵亡语音（全为 mp3，整目录删）
+          #   image/character   ~390M 武将立绘（保留 3 张 default_silhouette_*）
+          TARGET=dist
+          echo "===== 裁剪前 ====="
+          du -sh "$TARGET"
+
+          # 语音类可以整目录删除（目录内全是 mp3，无必需文件）
+          rm -rf "$TARGET/audio/skill"
+          rm -rf "$TARGET/audio/die"
+
+          # 武将立绘目录里有 3 张游戏必需的默认剪影
+          # （characterDefaultPicturePath = image/character/default_silhouette_），
+          # 不能整个目录删掉，否则未提供立绘的武将会显示破图。
+          # 做法：把必需的 3 张剪影先挪到临时区，删目录后再放回原位置。
+          if [ -d "$TARGET/image/character" ]; then
+            TMP_KEEP=$(mktemp -d)
+            find "$TARGET/image/character" -maxdepth 1 -name 'default_silhouette_*' -exec cp {} "$TMP_KEEP/" \; 2>/dev/null || true
+            KEPT=$(find "$TMP_KEEP" -maxdepth 1 -type f | wc -l | tr -d ' ')
+            rm -rf "$TARGET/image/character"
+            mkdir -p "$TARGET/image/character"
+            cp "$TMP_KEEP"/default_silhouette_* "$TARGET/image/character/" 2>/dev/null || true
+            rm -rf "$TMP_KEEP"
+            if [ "$KEPT" -eq 0 ]; then
+              echo "::error::未找到 default_silhouette_* 必需剪影，已中止（避免产物缺图）"
+              exit 1
+            fi
+            echo "image/character 已裁剪（保留 $KEPT 张必需剪影）"
+          fi
+
+          echo "===== 裁剪后 ====="
+          du -sh "$TARGET"
+          du -sh "$TARGET"/* | sort -rh | head -10
+          # 清单不在这里重建：紧随其后的 `pnpm sync` 会按裁剪后的 dist 生成清单，
+          # 并随 cap sync 一起同步进 iOS 工程（唯一实现见 apps/mobile/scripts/asset-manifest.ts）。
+
       - name: Generate iOS Capacitor project
         working-directory: apps/mobile
         # Capacitor 6 用 CocoaPods 管理 iOS 依赖，因此显式指定 packagemanager。
@@ -110,8 +162,8 @@ jobs:
       - name: Capacitor sync (builds preload.js)
         working-directory: apps/mobile
         # afterSync.ts 内部顺序：buildPreload() → writeAssetManifest() → capSync()
-        # 这一步会把 preload.js 与 dist 全量资源同步进 ios/App/App/public。
-        # 资源裁剪放在下一步，裁剪后再用 `cap copy` 重拷一次覆盖。
+        # 这一步把 preload.js 与（已裁剪的）dist 同步进 ios/App/App/public，
+        # 并顺带生成 asset-manifest.json —— 因此不再需要额外的 cap copy 与手工重建清单。
         run: pnpm sync
 
       # Capacitor 6 默认生成 apps/mobile/ios/App/App.xcworkspace（含 Pods）。
@@ -158,76 +210,22 @@ jobs:
           fi
           echo "Podfile found in $PROJ_DIR ✓"
 
-      - name: Slim assets (optional)
-        if: github.event_name == 'push' || inputs.slim_assets
-        working-directory: apps/mobile
-        run: |
-          # 侧载工具对未压缩 App 体积非常敏感：
-          #   - AltStore 未打补丁时 >300MB 的 ipa 直接报 Bad Allocation
-          #   - 即使打 4GB patch，Apple 侧未压缩 App 硬上限仍是 4GB
-          # 本仓库全量资源约 2.8GB，不裁剪几乎必然装不上。
-          #
-          # 裁掉的资源体积最大、且缺失不影响可玩性（自动保留必需占位图）：
-          #   audio/skill       470M  武将技能语音（全为 mp3，整目录删）
-          #   audio/die         111M  阵亡语音（全为 mp3，整目录删）
-          #   image/character   390M  武将立绘（保留 3 张 default_silhouette_*）
-          DIST=../../dist
-          # 同步进 iOS 工程的资源目录（排除 xcodeproj / Pods 内部的干扰路径）
-          PUBLIC=$(find ios -maxdepth 5 -type d -path "*/App/public" \
-                     ! -path "*.xcodeproj/*" ! -path "*/Pods/*" | head -n1)
-          echo "dist=$DIST public=$PUBLIC"
-          if [ -z "$PUBLIC" ]; then
-            echo "::error::找不到 iOS 工程内的 public 目录，无法裁剪。"
-            find ios -maxdepth 4 -type d ! -path "*.xcodeproj/*" || true
-            exit 1
-          fi
-          echo "===== 裁剪前 ====="
-          du -sh "$DIST"
-          du -sh "$PUBLIC" 2>/dev/null || true
-
-          # 同时删 dist 与已同步进 iOS 工程的那一份。
-          # 注意：`cap copy` 只做增量拷贝，不会清理目标目录里的多余文件，
-          # 所以必须显式删除 iOS 工程内的对应目录，否则瘦身形同虚设。
-          for TARGET in "$DIST" "$PUBLIC"; do
-            [ -d "$TARGET" ] || continue
-
-            # 语音类可以整目录删除（目录内全是 mp3，无必需文件）
-            rm -rf "$TARGET/audio/skill"
-            rm -rf "$TARGET/audio/die"
-
-            # 武将立绘目录里有 3 张游戏必需的默认剪影
-            # （characterDefaultPicturePath = image/character/default_silhouette_），
-            # 不能整个目录删掉，否则未提供立绘的武将会显示破图。
-            # 做法：把必需的 3 张剪影先挪到临时区，删目录后再放回原位置。
-            if [ -d "$TARGET/image/character" ]; then
-              TMP_KEEP=$(mktemp -d)
-              find "$TARGET/image/character" -maxdepth 1 -name 'default_silhouette_*' -exec cp {} "$TMP_KEEP/" \; 2>/dev/null || true
-              rm -rf "$TARGET/image/character"
-              mkdir -p "$TARGET/image/character"
-              cp "$TMP_KEEP"/default_silhouette_* "$TARGET/image/character/" 2>/dev/null || true
-              rm -rf "$TMP_KEEP"
-            fi
-          done
-
-          echo "===== 裁剪后 ====="
-          du -sh "$DIST"
-          du -sh "$PUBLIC" 2>/dev/null || true
-          du -sh "$DIST"/* | sort -rh | head -10
-
-          # 资源变了，asset-manifest.json 必须同步重建（dist 与 iOS 工程两份都要），
-          # 否则运行时会尝试读取已删除的文件。
-          # 清单的唯一实现是 scripts/asset-manifest.ts（afterSync.ts 也调用它），
-          # 这里复用同一个脚本 —— 免得「构建」与「CI 瘦身」各留一份规则后逐渐漂移。
-          pnpm run manifest "$DIST"
-          if [ -d "$PUBLIC" ]; then pnpm run manifest "$PUBLIC"; fi
-
-          # 把裁剪后的 dist（含新清单）覆盖同步到 iOS 工程。
-          # preload.js 未变化，无需重建。
-          npx cap copy ios
+      - name: Cache CocoaPods
+        # macOS runner 每次都是干净环境；不缓存的话每次 pod install 都要重新拉规格索引。
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('apps/mobile/ios/**/Podfile', 'apps/mobile/pnpm-lock.yaml') }}
+          restore-keys: |
+            pods-${{ runner.os }}-
 
       - name: Install CocoaPods dependencies
         working-directory: apps/mobile/ios/${{ steps.ios.outputs.app_dir }}
-        run: pod install --repo-update
+        # 去掉 --repo-update：Capacitor 6 的 pod 全部是本地 :path 引用
+        # （Podfile 指向 node_modules/@capacitor/ios 等），无需更新远端规格仓库；
+        # 而 --repo-update 会强制刷新 CocoaPods 规格库，是本步骤里最慢的一段。
+        run: pod install
 
       - name: Show workspace and scheme
         working-directory: apps/mobile/ios/${{ steps.ios.outputs.app_dir }}
