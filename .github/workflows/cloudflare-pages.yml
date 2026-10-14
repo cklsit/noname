@@ -4,22 +4,22 @@ name: Deploy Web to Cloudflare Pages
 #       主站：https://nngame.de5.net/（自定义域，2026-10-13 绑定）
 #       备用：https://noname-cje.pages.dev/（项目名 noname）
 #
-# 所在分支：**feat/web-pages**（2026-10-13 从 main 迁出；此前与 iOS 线共用 main，
+# 所在分支：feat/web-pages（2026-10-13 从 main 迁出；此前与 iOS 线共用 main，
 #   为免两套部署互相牵动而独立成支。main 上的同名文件已删除）
 #
 # 为什么从 GitHub Pages 迁移到 Cloudflare Pages（2026-10-11）：
 #   ① GitHub Pages 单站点硬上限 1 GB → 被迫裁掉全部武将语音（audio/skill 470 MiB +
 #      audio/die 111 MiB，共 9274 个文件）。Cloudflare Pages 无总大小限制
 #      （仅 20,000 文件/25 MiB 单文件），完整 dist（1.3 GiB / 15593 文件）可全量部署，
-#      **语音由此恢复**；
+#      语音由此恢复；
 #   ② 无限静态请求与带宽（免费版同享）；
 #   ③ 边缘网络对国内访问相对友好（GitHub Pages 访问稳定性一般）；
 #   ④ 允许商业用途。
 #
 # 部署方式：Direct Upload（构建在 GitHub Actions，产物直传 Cloudflare）
 #   - 不做 Cloudflare 侧的 Git 集成构建：本仓库的产物需要多步后处理（见下方改写步骤），
-#     且直传部署**不计入** Cloudflare 的 500 次/月构建配额；
-#   - Pages 项目已创建（2026-10-11：noname，production_branch=**main**）；如需重建：
+#     且直传部署不计入 Cloudflare 的 500 次/月构建配额；
+#   - Pages 项目已创建（2026-10-11：noname，production_branch=main）；如需重建：
 #       npx wrangler pages project create noname --production-branch=main
 #     ⚠️ production_branch 保持 main（与下方 --branch=main 配套）；本工作流传在
 #        feat/web-pages 分支上运行，但部署仍标记为生产部署，自定义域不受影响。
@@ -32,7 +32,7 @@ name: Deploy Web to Cloudflare Pages
 #   - 单文件 ≤ 25 MiB（当前全部 < 20 MiB）
 #   - 单次部署总量无硬限制；静态请求/带宽无限
 #
-# ✅ 可玩性方案（2026-10-11，本地+线上实测）：上游 web 版在**启动时**要求**同源 fs 后端**
+# ✅ 可玩性方案（2026-10-11，本地+线上实测）：上游 web 版在启动时要求同源 fs 后端
 #   （@noname/server / noname-server 提供的 /checkFile、/readFile、/getFileList、/writeFile 等接口，
 #   见 apps/core/noname/init/browser.js）。纯静态托管没有后端，直接跑会停在「加载内容失败」。
 #   本工作流通过两件事让纯静态可玩：
@@ -40,38 +40,38 @@ name: Deploy Web to Cloudflare Pages
 #        读 = 静态文件 + asset-manifest.json 索引；写 = Cache API 覆盖层（持久、可读回）；
 #        行为与错误语义对齐 packages/fs/src/index.ts 的参考实现。
 #     ② 路径不兼容点统一相对化（importmap / game.js / fs 路由 / 内容包路径），详见下方步骤注释。
-#        说明：Cloudflare Pages 为**根路径部署**、GitHub Pages 为子路径部署；上述改写均使用
+#        说明：Cloudflare Pages 为根路径部署、GitHub Pages 为子路径部署；上述改写均使用
 #        "./" 或 "../../" 相对形式，两种部署布局下解析结果都正确（已在 GitHub Pages 全量验证），
 #        因此本工作流与旧 pages.yml 共用同一套产物后处理逻辑。
 #
 # ⚠️ 三个平台特性与对策（2026-10-11 部署实测，v2–v4 修正）：
-#   ① wrangler 上传有**硬编码忽略清单**（含 "**/node_modules"，不可配置）→ dist/node_modules
+#   ① wrangler 上传有硬编码忽略清单（含 "**/node_modules"，不可配置）→ dist/node_modules
 #      里的模块文件（vue / pinyin-pro / dedent / crypto-js…，共 120 个）不会被上传，
 #      importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。对策：部署前把 node_modules
 #      改名 vendor 并全量替换文本引用（vendor 不在忽略清单内，见 Vendor rename 步骤）。
 #   ② asset-manifest.json 不是 pnpm build 的产物（源码树无生成者），是「静态部署侧」产物
 #      （SW fs shim 的目录索引）。GitHub Pages 版由旧工作流的「裁减后重建」步骤顺手生成；
 #      本工作流不裁减，须显式生成（否则 shim 索引为空，目录列举能力缺失，见 Generate 步骤）。
-#   ③ CF Pages 在**没有顶层 404.html** 时会按 SPA 处理：任何未匹配路径都回退 index.html
+#   ③ CF Pages 在没有顶层 404.html 时会按 SPA 处理：任何未匹配路径都回退 index.html
 #      并返回 200 —— 这会破坏「文件存在性」语义：SW fs shim 的 HEAD 兜底与游戏的
 #      checkFile 探测（如 noname.config.txt「懒人包配置」）都会把"不存在"误判为"存在"，
 #      进而把 index.html 内容当作文件数据读取（atob 解码崩溃、启动流程错乱，2026-10-11 实测）。
 #      对策：写入顶层 404.html（平台自此对未匹配路径返回 404，与本地/GitHub Pages 一致）。
 #
 # ⚡ 联机中继（2026-10 更新）：浏览器禁止 https 页面直连 ws://（混合内容拦截），
-#   而社区联机服普遍只有 ws。中继由 **本 Fork 部署方在 NAS（群晖）上运行的 Cloudflare
-#   命名隧道**承担（隧道内跑 relay-server.mjs），对外是一个**固定域名**的中继入口：
+#   而社区联机服普遍只有 ws。中继由本 Fork 部署方在 NAS（群晖）上运行的 Cloudflare
+#   命名隧道承担（隧道内跑 relay-server.mjs），对外是一个固定域名的中继入口：
 #     wss://<中继域名>/?to=<host>:<port>  →  ws://<host>:<port>（透明转发，目标端口需 ≥1024）
 #   经 CF 边缘转发（大陆玩家约 +50~200ms，回合制可接受）。中继出站发生在 NAS 上（普通主机），
 #   可直连裸 IP 目标 —— 这是相对「CF Workers 中继」的关键差异。
 #
 #   ❌ 已废弃并由本工作流移除：早期方案在 CF Pages 注入 Functions 中继
 #      （.github/pages/relay-worker.js → dist/_worker.js + dist/_routes.json，路由 /relay）。
-#      废弃原因：**CF Workers 生产环境出站无法连接裸 IP（error 1003）**，导致「玩家只输纯 IP」
+#      废弃原因：CF Workers 生产环境出站无法连接裸 IP（error 1003），导致「玩家只输纯 IP」
 #      的诉求无法满足。相关源文件保留备查，但不再注入产物、不再有构建依赖。
 #   ⭐ 产物侧自动改写（v6）：https 页面下，客户端连接逻辑会把 ws:// 目标自动改写为中继入口
-#      （wss://<NONAME_RELAY_HOST>/?to=…）——玩家在游戏内**直接输入纯 IP（如 43.138.118.130）
-#      即可联机**，无需手动拼中继地址；http/本地/桌面版环境不触发（行为保持原样）。
+#      （wss://<NONAME_RELAY_HOST>/?to=…）——玩家在游戏内直接输入纯 IP（如 43.138.118.130）
+#      即可联机，无需手动拼中继地址；http/本地/桌面版环境不触发（行为保持原样）。
 #   ⭐ key 预发（v7）：服务器接受连接后有 2 秒 keyCheck 超时（见 packages/server/src/server/
 #      createServer.ts），而客户端原逻辑要等 roomlist（大消息）到达后才回 key —— 慢链路
 #      （CF 隧道 RTT 高、吞吐低）下 key 会 >2 秒才到，被服务器判 denied("key")，客户端误显示
@@ -142,11 +142,11 @@ jobs:
 
       - name: Vendor rename (bypass wrangler's node_modules exclusion)
         # 为什么需要这一步（2026-10-11 首次部署实测）：
-        #   wrangler 对 Pages 上传有**硬编码忽略清单**（含 "**/node_modules"，不可配置）→
+        #   wrangler 对 Pages 上传有硬编码忽略清单（含 "**/node_modules"，不可配置）→
         #   dist/node_modules 的模块文件（vue / pinyin-pro / dedent / crypto-js…）不会被上传，
         #   importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。
         #   对策：把目录改名为 vendor（不在忽略清单内）并全量替换文本引用。
-        #   ⚠️ 关键：pnpm 结构里包目录**内含二级 node_modules**（形如
+        #   ⚠️ 关键：pnpm 结构里包目录内含二级 node_modules（形如
         #   .pnpm/<pkg>@<ver>/node_modules/<pkg>/…），引用里出现的这些"内层 node_modules 段"
         #   必须与文件系统保持一致 —— 因此内层同名目录也一并改名为 vendor
         #   （只做字符串替换而不改目录会导致引用失配，2026-10-11 本地实测踩过）。
@@ -377,9 +377,9 @@ jobs:
           //         玩家直接输纯 IP 即可联机；http/本地/桌面版环境不触发，行为保持原样；
           //         已注入则跳过——幂等）
           //        说明：NONAME_RELAY_HOST 由 workflow 顶层 env 提供（唯一取值来源），
-          //        注入进产物的是**字符串字面量**，运行时无需读取任何变量。
+          //        注入进产物的是字符串字面量，运行时无需读取任何变量。
           //    ⑦-B key 预发：在 ws onopen 时立即预发一次 key（见文件头部 v7 说明）。
-          //        ⚠️ 关键：⑦-A 与 ⑦-B 各自独立判断/注入，**不能**因 ⑦-A「已注入过」就
+          //        ⚠️ 关键：⑦-A 与 ⑦-B 各自独立判断/注入，不能因 ⑦-A「已注入过」就
           //        continue 掉整个文件——否则 ⑦-B 在已有中继注入的产物上会被整体跳过。
           {
             const RELAY_HOST = process.env.NONAME_RELAY_HOST || "relay.nngame.de5.net";
@@ -453,7 +453,7 @@ jobs:
 
       - name: Generate asset-manifest.json
         # 为什么需要这一步（2026-10-11 首次部署实测）：
-        #   asset-manifest.json **不是** pnpm build 的产物（源码树中无生成者）——它是
+        #   asset-manifest.json 不是 pnpm build 的产物（源码树中无生成者）——它是
         #   「静态部署侧」产物：运行时 SW fs shim 读取它作为目录索引（getFileList 的数据源，
         #   模拟列目录）。GitHub Pages 版之所以有它，是因为旧工作流的「裁减后重建」步骤
         #   顺手生成；本工作流不裁减，因此需要显式生成（否则 shim 索引为空 → 列目录能力缺失）。
@@ -484,7 +484,7 @@ jobs:
         #      检查 SW 更新时会使用 HTTP 缓存 → 对 service-worker.js 与 asset-manifest.json
         #      置 no-cache（每次协商，配合 ETag），保证「重部署 = 立即被发现」。其余静态资源
         #      不额外配置（沿用 Cloudflare Pages 默认的协商缓存策略）。
-        #   ② 404.html：CF Pages 在**没有顶层 404.html** 时按 SPA 处理 —— 任何未匹配路径
+        #   ② 404.html：CF Pages 在没有顶层 404.html 时按 SPA 处理 —— 任何未匹配路径
         #      回退 index.html 且返回 200（实测）。这破坏「文件存在性」语义：SW fs shim 的
         #      staticFileExists（HEAD 兜底）与游戏启动的 checkFile 探测（如 noname.config.txt）
         #      都会把"不存在"误判为"存在"，随后把 index.html 的 HTML 内容当作文件数据读取
@@ -597,9 +597,9 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
-        #   --branch=main **有意保留**（勿改成 feat/web-pages）：wrangler 以此值与
-        #   Pages 项目的 production_branch 比对，**只有与项目设置一致（=main）才记为
-        #   生产部署**，才会挂到自定义域 nngame.de5.net。CI 检出为 detached HEAD，
+        #   --branch=main 有意保留（勿改成 feat/web-pages）：wrangler 以此值与
+        #   Pages 项目的 production_branch 比对，只有与项目设置一致（=main）才记为
+        #   生产部署，才会挂到自定义域 nngame.de5.net。CI 检出为 detached HEAD，
         #   必须显式指定分支名（不能省略）。若将来把项目 production_branch 改成
         #   feat/web-pages，此处须同步改，否则会退化为「预览部署」（不带自定义域）。
         #   npx 锁大版本 4，避免上游 breaking change。
