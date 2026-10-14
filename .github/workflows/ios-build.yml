@@ -1,7 +1,7 @@
 name: Build unsigned iOS IPA
 
 # 用途：在没有 Mac（或 Mac 太老装不了新 Xcode）的情况下，用 GitHub 免费提供的
-# macOS 云端机器把《无名杀》编译成 **未签名** 的 .ipa，再交给 SideStore / AltStore
+# macOS 云端机器把《无名杀》编译成未签名的 .ipa，再交给 SideStore / AltStore
 # 用你自己的 Apple ID 重签安装。
 #
 # 为什么必须是「未签名」的 ipa：
@@ -101,7 +101,7 @@ jobs:
           df -h /
           du -sh dist
 
-      # ⚠️ 位置很关键：必须在 `cap add ios` / `pnpm sync` **之前**裁剪 dist。
+      # ⚠️ 位置很关键：必须在 `cap add ios` / `pnpm sync` 之前裁剪 dist。
       #   原先的顺序是「全量同步进 iOS 工程 → 再裁剪 dist 与已同步的那一份 → 再 cap copy 覆盖」，
       #   相当于先把约 955MB 用不到的语音与立绘拷进 ios/App/App/public，随后又删掉，
       #   还多跑一次 cap copy + 手工重建两份 asset-manifest.json。
@@ -167,7 +167,7 @@ jobs:
         run: pnpm sync
 
       # Capacitor 6 默认生成 apps/mobile/ios/App/App.xcworkspace（含 Pods）。
-      # 注意：App.xcodeproj 内部还有一个 project.xcworkspace，它**不包含 Pods**，
+      # 注意：App.xcodeproj 内部还有一个 project.xcworkspace，它不包含 Pods，
       # 用它构建会报 `no such module 'Capacitor'`。所以必须显式排除 xcodeproj 内部
       # 的那个，只取与 .xcodeproj 同级、且名字与 xcodeproj 同名的 workspace。
       - name: Locate iOS workspace
