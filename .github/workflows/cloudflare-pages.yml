@@ -617,13 +617,20 @@ jobs:
             exit 1
           fi
           echo "404.html 检查通过（CF SPA 回退已关闭）"
-          if ! grep -q "NONAME_RELAY_HOST" dist/noname/game/index.js; then
-            echo "::error::联机自动中继未注入（dist/noname/game/index.js 缺少 NONAME_RELAY_HOST）"
+          # v8.1：本步骤的断言与 ⑦ 保持同一口径 —— 只认「压缩后仍保留」的标记。
+          #   压缩会把 const NONAME_RELAY_HOST 内联、把 game.ws 重命名为短名，
+          #   故不能用这两个字面量做 grep（否则必然 0 命中）。字符串字面量与方法名保留。
+          if ! grep -qF "$NONAME_RELAY_HOST" dist/noname/game/index.js; then
+            echo "::error::联机自动中继未注入（dist/noname/game/index.js 缺少中继域名 $NONAME_RELAY_HOST）"
+            exit 1
+          fi
+          if ! grep -qF "/?to=" dist/noname/game/index.js; then
+            echo "::error::联机自动中继未注入（dist/noname/game/index.js 缺少 /?to= 改写标记）"
             exit 1
           fi
           echo "联机自动中继检查通过（产物已注入 ws→固定域名中继 改写）"
-          if ! grep -q 'game.ws.addEventListener("open"' dist/noname/game/index.js; then
-            echo "::error::key 预发未注入（dist/noname/game/index.js 缺少 game.ws.addEventListener）"
+          if ! grep -qE 'addEventListener\("open"' dist/noname/game/index.js; then
+            echo "::error::key 预发未注入（dist/noname/game/index.js 缺少 addEventListener(\"open\"）"
             exit 1
           fi
           echo "key 预发检查通过（连接建立后立即预发 key，规避服务器 2 秒 keyCheck 超时）"
