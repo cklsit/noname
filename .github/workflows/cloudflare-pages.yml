@@ -4,8 +4,9 @@ name: Deploy Web to Cloudflare Pages
 #       主站：https://nngame.de5.net/（自定义域，2026-10-13 绑定）
 #       备用：https://noname-cje.pages.dev/（项目名 noname）
 #
-# 所在分支：feat/web-pages（2026-10-13 从 main 迁出；此前与 iOS 线共用 main，
-#   为免两套部署互相牵动而独立成支。main 上的同名文件已删除）
+# 所在分支：feat/web-pages（网页版主分支）；main 上另存一份同名副本
+#   （2026-10-17 恢复，用于 Actions 页手动触发——手动触发要求文件在默认分支）。
+#   两份必须保持同内容、同 blob（本文件在仓库中以 CRLF 存储）。
 #
 # 为什么从 GitHub Pages 迁移到 Cloudflare Pages（2026-10-11）：
 #   ① GitHub Pages 单站点硬上限 1 GB → 被迫裁掉全部武将语音（audio/skill 470 MiB +
@@ -78,15 +79,23 @@ name: Deploy Web to Cloudflare Pages
 #      为「游戏版本过低」。产物侧在 ws onopen 时立即预发一次 key 规避该超时（随后 roomlist
 #      到达会按原逻辑再发一次，无副作用）。
 #
-# 触发方式：GitHub 网页 → Actions → “Deploy Web to Cloudflare Pages” → Run workflow
-#   （或 gh workflow run cloudflare-pages.yml --repo cklsit/noname --ref main）
+# 触发方式：
+#   ① 自动部署：推送到 feat/web-pages 即触发（含每日上游同步产生的合并提交）；
+#   ② 手动部署：GitHub 网页 → Actions → “Deploy Web to Cloudflare Pages” → Run workflow
+#      （务必选 feat/web-pages 分支；或 gh workflow run cloudflare-pages.yml
+#        --repo cklsit/noname --ref feat/web-pages）
 
 on:
-  # 首版仅手动触发；验证稳定后，取消下面三行的注释即可实现更新后自动部署：
-  workflow_dispatch:
+  # 自动部署：推送到 feat/web-pages 即触发（网页开发改动只动这个分支）。
+  #   注意：main 上的副本仅用于手动触发；main 的推送不会触发部署
+  #   （下方 branches 过滤器只匹配 feat/web-pages）。
+  push:
+    branches:
+      - feat/web-pages
 
-  # push:
-  #   branches: [feat/web-pages]
+  # 手动触发：临时部署时用；务必选择 feat/web-pages 分支运行
+  #   （选 main 部署的是 main 的内容，并非网页版最新代码）。
+  workflow_dispatch:
 
 # 最小权限：仅读取仓库源码（部署凭据走 CLOUDFLARE_API_TOKEN secret，不用 OIDC）
 permissions:
