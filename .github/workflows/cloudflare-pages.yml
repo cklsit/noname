@@ -71,7 +71,7 @@ name: Deploy Web to Cloudflare Pages
 #      废弃原因：CF Workers 生产环境出站无法连接裸 IP（error 1003），导致「玩家只输纯 IP」
 #      的诉求无法满足。相关源文件保留备查，但不再注入产物、不再有构建依赖。
 #   ⭐ 产物侧自动改写（v6）：https 页面下，客户端连接逻辑会把 ws:// 目标自动改写为中继入口
-#      （wss://<NONAME_RELAY_HOST>/?to=…）——玩家在游戏内直接输入纯 IP（如 43.138.118.130）
+#      （wss://<NONAME_RELAY_HOST>/?to=…）——玩家在游戏内直接输入纯 IP（`IP` 或 `IP:端口`）
 #      即可联机，无需手动拼中继地址；http/本地/桌面版环境不触发（行为保持原样）。
 #   ⭐ key 预发（v7）：服务器接受连接后有 2 秒 keyCheck 超时（见 packages/server/src/server/
 #      createServer.ts），而客户端原逻辑要等 roomlist（大消息）到达后才回 key —— 慢链路
