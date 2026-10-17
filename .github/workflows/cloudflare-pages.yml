@@ -78,6 +78,7 @@ name: Deploy Web to Cloudflare Pages
 #      （CF 隧道 RTT 高、吞吐低）下 key 会 >2 秒才到，被服务器判 denied("key")，客户端误显示
 #      为「游戏版本过低」。产物侧在 ws onopen 时立即预发一次 key 规避该超时（随后 roomlist
 #      到达会按原逻辑再发一次，无副作用）。
+#   ⭐ 注入前移（v8，2026-10-17）：注入前移至源码级（适配上游产物压缩；产物侧仅校验）。
 #
 # 触发方式：
 #   ① 自动部署：推送到 feat/web-pages 即触发（含每日上游同步产生的合并提交）；
@@ -143,6 +144,91 @@ jobs:
         # 本 job 只做网页构建 + 产物改写，不需要 electron 等 postinstall 重活。
         run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
 
+      - name: Inject relay rewrite & key preflight (source level)
+        # v8（2026-10-17）：注入从「产物侧打补丁」前移到「构建前改源码」。
+        #   为什么：上游 d1ef29aa3 起对本体启用 esbuild 压缩，dist 内标识符全部重命名，
+        #   源码级字面锚点（const url = tempUrl.href; / game.ws = new WebSocket(url);）
+        #   在压缩产物上 0 命中 → 产物侧打补丁失效。
+        #   改在源码注入后：① 注入随打包一起压缩，变量与导入引用由编译器正确解析；
+        #   ② dist/src 是源码的逐字节副本，两条产物路径自动同时覆盖。
+        #   ⚠️ 只修改 CI 工作区里的源码文件，构建完即丢弃，绝不提交回仓库。
+        #   RELAY_HOST 取 workflow 顶层 env.NONAME_RELAY_HOST（唯一取值来源）。
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          const FILE = "apps/core/noname/game/index.js";
+          const RELAY_HOST = process.env.NONAME_RELAY_HOST || "relay.nngame.de5.net";
+
+          if (!fs.existsSync(FILE)) {
+            console.error(`::error::源码 ${FILE} 不存在（上游构建结构可能已变化）`);
+            process.exit(1);
+          }
+
+          let src = fs.readFileSync(FILE, "utf8");
+          let changed = false;
+
+          // ⑦-A 联机地址自动中继：https 页面下把 ws:// 目标自动改写为「固定域名中继」
+          //   锚点与注入文本与原产物侧逻辑完全一致，仅目标文件换成源码。
+          const CONNECT_RE = /^([ \t]*)const url = tempUrl\.href;/m;
+          if (src.includes("NONAME_RELAY_HOST")) {
+            console.log(`${FILE}: 联机自动中继已注入过，跳过`);
+          } else {
+            const hits = src.match(new RegExp(CONNECT_RE.source, "gm"));
+            if (!hits || hits.length !== 1) {
+              console.error(`::error::${FILE} 中 connect 锚点命中 ${hits ? hits.length : 0} 次（期望 1）`);
+              process.exit(1);
+            }
+            src = src.replace(CONNECT_RE, (m, ind) =>
+              `${ind}// 联机中继固定域名（命名隧道；地址永不变化）\n` +
+              `${ind}const NONAME_RELAY_HOST = ${JSON.stringify(RELAY_HOST)};\n` +
+              `${ind}let url = tempUrl.href;\n` +
+              `${ind}if (location.protocol === "https:" && url.startsWith("ws://")) {\n` +
+              `${ind}  url = \`wss://\${NONAME_RELAY_HOST}/?to=\${url.slice(5).replace(/\\/+$/, "")}\`;\n` +
+              `${ind}}`,
+            );
+            console.log(`${FILE}: 联机地址自动中继已注入（固定域名 ${RELAY_HOST}）`);
+            changed = true;
+          }
+
+          // ⑦-B key 预发：ws onopen 时立即预发一次 key（规避服务器 2 秒 keyCheck 超时）
+          //   ⚠️ 与 ⑦-A 各自独立判断/注入，不能因 ⑦-A「已注入过」就跳过整个文件。
+          const KEY_ANCHOR_RE = /^([ \t]*)game\.ws = new WebSocket\(url\);/m;
+          if (src.includes('game.ws.addEventListener("open"')) {
+            console.log(`${FILE}: key 预发已注入过，跳过`);
+          } else {
+            const keyHits = src.match(new RegExp(KEY_ANCHOR_RE.source, "gm"));
+            if (!keyHits || keyHits.length !== 1) {
+              console.error(`::error::${FILE} 中 game.ws = new WebSocket(url) 锚点命中 ${keyHits ? keyHits.length : 0} 次（期望 1）`);
+              process.exit(1);
+            }
+            src = src.replace(KEY_ANCHOR_RE, (m, ind) =>
+              `${ind}game.ws = new WebSocket(url);\n` +
+              `${ind}// 服务器对 key 有 2 秒超时校验：若客户端等 roomlist 到达后才回 key，\n` +
+              `${ind}// 慢链路下会超时并被判定为 denied("key")。故在此连接建立后立即预发一次 key。\n` +
+              `${ind}game.ws.addEventListener("open", () => {\n` +
+              `${ind}\ttry {\n` +
+              `${ind}\t\tgame.send("server", "key", [game.onlineKey, lib.version]);\n` +
+              `${ind}\t} catch {}\n` +
+              `${ind}});`
+            );
+            console.log(`${FILE}: key 预发已注入（连接建立即发送 server:key）`);
+            changed = true;
+          }
+
+          if (changed) fs.writeFileSync(FILE, src);
+
+          // 统一校验：两处注入都必须存在于源码文本
+          if (!src.includes("NONAME_RELAY_HOST")) {
+            console.error(`::error::${FILE} 联机中继注入校验失败`);
+            process.exit(1);
+          }
+          if (!src.includes('game.ws.addEventListener("open"')) {
+            console.error(`::error::${FILE} key 预发注入校验失败`);
+            process.exit(1);
+          }
+          console.log(`${FILE}: 源码级注入完成（中继 + key 预发）`);
+          NODE
       - name: Build web assets (dist/)
         env:
           NONAME_BUILD_CHANNEL: test
@@ -380,82 +466,30 @@ jobs:
           }
           console.log("断言通过：无遗留站内根绝对引用（白名单除外）");
 
-          // ⑦ 产物侧两层注入（同一 for 循环内，各自独立的幂等检查与断言）：
-          //    ⑦-A 联机地址自动中继：https 页面下，把 ws:// 目标自动改写为「固定域名中继」
-          //        （中继 = NAS 上的命名隧道 + relay-server.mjs；根路径 + ?to= 形态；
-          //         玩家直接输纯 IP 即可联机；http/本地/桌面版环境不触发，行为保持原样；
-          //         已注入则跳过——幂等）
-          //        说明：NONAME_RELAY_HOST 由 workflow 顶层 env 提供（唯一取值来源），
-          //        注入进产物的是字符串字面量，运行时无需读取任何变量。
-          //    ⑦-B key 预发：在 ws onopen 时立即预发一次 key（见文件头部 v7 说明）。
-          //        ⚠️ 关键：⑦-A 与 ⑦-B 各自独立判断/注入，不能因 ⑦-A「已注入过」就
-          //        continue 掉整个文件——否则 ⑦-B 在已有中继注入的产物上会被整体跳过。
+          // ⑦ 产物侧只校验（v8 起注入已前移到构建前的源码级，此处不再打补丁）：
+          //    ⑦-A 联机地址自动中继、⑦-B key 预发 的来源都是构建前步骤
+          //    「Inject relay rewrite & key preflight (source level)」对
+          //    apps/core/noname/game/index.js 的注入，注入随打包一起压缩。
+          //    这里只确认两条产物路径都带上了注入标记，缺失即失败（不静默降级）。
+          //    说明：压缩会重命名局部变量，但字符串字面量（relay 域名、"/?to="）与方法名
+          //    （addEventListener）保留，故用它们作校验标记。
           {
             const RELAY_HOST = process.env.NONAME_RELAY_HOST || "relay.nngame.de5.net";
-            const CONNECT_RE = /^([ \t]*)const url = tempUrl\.href;/m;
-            const KEY_ANCHOR_RE = /^([ \t]*)game\.ws = new WebSocket\(url\);/m;
             for (const file of ["dist/noname/game/index.js", "dist/src/noname/game/index.js"]) {
               if (!fs.existsSync(file)) {
-                console.log(`${file} 不存在，跳过`);
-                continue;
-              }
-              let src = fs.readFileSync(file, "utf8");
-              let changed = false;
-
-              // ⑦-A 联机地址自动中继（保持原逻辑与断言不变）
-              if (src.includes("NONAME_RELAY_HOST")) {
-                console.log(`${file}: 联机自动中继已注入过，跳过`);
-              } else {
-                const hits = src.match(new RegExp(CONNECT_RE.source, "gm"));
-                if (!hits || hits.length !== 1) {
-                  console.error(`::error::${file} 中 connect 锚点命中 ${hits ? hits.length : 0} 次（期望 1）`);
-                  process.exit(1);
-                }
-                src = src.replace(CONNECT_RE, (m, ind) =>
-                  `${ind}// 联机中继固定域名（命名隧道；地址永不变化）\n` +
-                  `${ind}const NONAME_RELAY_HOST = ${JSON.stringify(RELAY_HOST)};\n` +
-                  `${ind}let url = tempUrl.href;\n` +
-                  `${ind}if (location.protocol === "https:" && url.startsWith("ws://")) {\n` +
-                  `${ind}  url = \`wss://\${NONAME_RELAY_HOST}/?to=\${url.slice(5).replace(/\\/+$/, "")}\`;\n` +
-                  `${ind}}`,
-                );
-                console.log(`${file}: 联机地址自动中继已注入（固定域名 ${RELAY_HOST}）`);
-                changed = true;
-              }
-
-              // ⑦-B key 预发（新增）
-              if (src.includes('game.ws.addEventListener("open"')) {
-                console.log(`${file}: key 预发已注入过，跳过`);
-              } else {
-                const keyHits = src.match(new RegExp(KEY_ANCHOR_RE.source, "gm"));
-                if (!keyHits || keyHits.length !== 1) {
-                  console.error(`::error::${file} 中 game.ws = new WebSocket(url) 锚点命中 ${keyHits ? keyHits.length : 0} 次（期望 1）`);
-                  process.exit(1);
-                }
-                src = src.replace(KEY_ANCHOR_RE, (m, ind) =>
-                  `${ind}game.ws = new WebSocket(url);\n` +
-                  `${ind}// 服务器对 key 有 2 秒超时校验：若客户端等 roomlist 到达后才回 key，\n` +
-                  `${ind}// 慢链路下会超时并被判定为 denied("key")。故在此连接建立后立即预发一次 key。\n` +
-                  `${ind}game.ws.addEventListener("open", () => {\n` +
-                  `${ind}\ttry {\n` +
-                  `${ind}\t\tgame.send("server", "key", [game.onlineKey, lib.version]);\n` +
-                  `${ind}\t} catch {}\n` +
-                  `${ind}});`
-                );
-                console.log(`${file}: key 预发已注入（连接建立即发送 server:key）`);
-                changed = true;
-              }
-
-              if (changed) fs.writeFileSync(file, src);
-              // 统一校验：两份注入都必须存在于最终产物文本
-              if (!src.includes("NONAME_RELAY_HOST")) {
-                console.error(`::error::${file} 联机中继注入校验失败`);
+                console.error(`::error::${file} 不存在（上游构建结构可能已变化）`);
                 process.exit(1);
               }
-              if (!src.includes('game.ws.addEventListener("open"')) {
-                console.error(`::error::${file} key 预发注入校验失败`);
+              const src = fs.readFileSync(file, "utf8");
+              if (!src.includes(RELAY_HOST) || !src.includes("/?to=")) {
+                console.error(`::error::${file} 未包含联机中继注入（期望含 ${RELAY_HOST} 与 "/?to="）`);
                 process.exit(1);
               }
+              if (!/addEventListener\(\s*"open"/.test(src)) {
+                console.error(`::error::${file} 未包含 key 预发注入（期望匹配 addEventListener("open"）`);
+                process.exit(1);
+              }
+              console.log(`${file}: 产物注入校验通过（中继 + key 预发）`);
             }
           }
           NODE
