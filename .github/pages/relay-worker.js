@@ -7,7 +7,7 @@
  *     wss://<本站>/relay?to=<host>:<port>  →  ws://<host>:<port>
  *
  * 用法（游戏内「联机」输入框）：
- *   wss://noname-cje.pages.dev/relay?to=43.138.118.130:8080
+ *   wss://noname-cje.pages.dev/relay?to=<IP>:<端口>
  *
  * 安全与配额：
  *   - 目标端口限制 >= 1024（防滥用连系统/敏感服务）；
