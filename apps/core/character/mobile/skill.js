@@ -2,6 +2,82 @@
 
 /** @type { importCharacterConfig["skill"] } */
 const skills = {
+	//马云禄
+	mbfengpo: {
+		audio: "fengpo",
+		trigger: { player: "useCardToPlayered" },
+		locked: false,
+		mod: {
+			aiOrder(player, card, num) {
+				if (num > 0 && get.suit(card) == "diamond") {
+					return num - 0.1;
+				}
+			},
+			aiValue(player, card, num) {
+				if (num > 0 && get.suit(card) == "diamond") {
+					return num + 0.1;
+				}
+			},
+			aiUseful() {
+				return lib.skill.mbfengpo.mod.aiValue.apply(this, arguments);
+			},
+		},
+		filter(event, player) {
+			if (event.targets.length != 1 || !["sha", "juedou"].includes(event.card.name)) {
+				return false;
+			}
+			return player.getStorage("mbfengpo_used").length < 2;
+		},
+		async cost(event, trigger, player) {
+			const controls = ["加伤", "摸牌", "cancel2"].removeArray(player.getStorage(`${event.skill}_used`));
+			if (controls.length <= 1) return;
+			const result = await player
+				.chooseControl({
+					controls,
+					prompt: get.prompt2(event.skill),
+					ai() {
+						const { controls, player, target } = get.event();
+						const num = player.countCards("he", { suit: "diamond" }) + target.countCards("e", { suit: "diamond" }) + Math.floor(target.countCards("h") / 5);
+						if (get.attitude(player, target) > 0 && controls.includes("摸牌") && num > 0) return "摸牌";
+						if (get.attitude(player, target) < 0) {
+							if (controls.includes("摸牌")) return "摸牌";
+							return "加伤";
+						}
+						return "cancel2";
+					},
+				})
+				.set("target", trigger.target)
+				.forResult();
+			if (typeof result?.control == "string" && result.control != "cancel2") {
+				event.result = {
+					bool: true,
+					cost_data: result.control,
+					targets: [trigger.target],
+				};
+			}
+		},
+		async content(event, trigger, player) {
+			const {
+				cost_data: control,
+				targets: [target],
+			} = event;
+			player.addTempSkill(`${event.name}_used`, "phaseAnyAfter");
+			player.markAuto(`${event.name}_used`, [control]);
+			const num = player.countCards("he", { suit: "diamond" }) + target.countCards("he", { suit: "diamond" });
+			if (num > 0) {
+				if (control == "摸牌") {
+					await player.draw(num);
+				} else {
+					const evt = trigger.getParent();
+					evt.baseDamage ??= 1;
+					evt.baseDamage += num;
+				}
+			} else {
+				player.popup("杯具");
+			}
+		},
+		subSkill: { used: { charlotte: true, onremove: true } },
+	},
 	//神吕布
 	mbwumou: {
 		audio: "wumou",
@@ -2306,6 +2382,7 @@ const skills = {
 		audio: "shanjia",
 		enable: "phaseUse",
 		usable: 1,
+		manualConfirm: true,
 		init(player) {
 			player.addSkill("mbshanjia_count");
 		},
@@ -2391,7 +2468,7 @@ const skills = {
 					if (cards.length >= discardNum) {
 						return 2;
 					}
-					return 0;
+					return 1;
 				},
 			},
 			threaten: 3,
@@ -4199,7 +4276,7 @@ const skills = {
 		audio: 4,
 		trigger: { player: "useCardAfter" },
 		filter(event, player) {
-			return get.is.damageCard(event.card) && event.targets?.some(target => target !== player);
+			return get.is.damageCard(event.card) && event.targets?.some(target => target !== player && target.isIn());
 		},
 		async cost(event, trigger, player) {
 			event.result = await player
@@ -4221,7 +4298,7 @@ const skills = {
 				})
 				.set(
 					"targets",
-					trigger.targets.filter(target => target !== player)
+					trigger.targets.filter(target => target !== player && target.isIn())
 				)
 				.forResult();
 		},
@@ -4733,7 +4810,7 @@ const skills = {
 					.filter(evt => evt == trigger.getParent("useCard", true, true))
 					.step(async (event, trigger, player) => {
 						const cards = trigger.cards.filterInD("od");
-						if (!cards?.length) {
+						if (!cards?.length || !target?.isIn()) {
 							return;
 						}
 						const list = [];
@@ -4767,6 +4844,7 @@ const skills = {
 	hefeizherui: {
 		derivation: "hefei_xianjian",
 		audio: 4,
+		logAudio: () => 2,
 		trigger: { global: "useCardToPlayered" },
 		filter(event, player) {
 			if (event.card.name != "sha" || get.is.convertedCard(event.card) || get.is.virtualCard(event.card)) {
@@ -4837,6 +4915,7 @@ const skills = {
 		subSkill: {
 			damage: {
 				audio: "hefeizherui",
+				logAudio: () => ["hefeizherui3.mp3", "hefeizherui4.mp3"],
 				trigger: { global: ["loseAfter", "loseAsyncAfter", "equipAfter", "addJudgeAfter", "addToExpansionAfter", "gainAfter"] },
 				getIndex(event, player) {
 					let list = [];
@@ -8096,6 +8175,7 @@ const skills = {
 							return (target === source || ui.selected.targets.includes(source)) && lib.filter.targetEnabled.apply(this, arguments);
 						})
 						.set("sourcex", target)
+						.set("addCount", false)
 						.forResult();
 					if (result?.bool) {
 						sgn--;
@@ -9213,7 +9293,7 @@ const skills = {
 			}
 		},
 		ai: {
-			combo: "mbhuxiao",
+			combo: "mbxuehen",
 			order: 10,
 			result: { player: 1 },
 		},
@@ -22250,6 +22330,7 @@ const skills = {
 		derivation: ["shhlianhua1", "shhlianhua2"],
 		trigger: { target: "useCardToTarget" },
 		forced: true,
+		locked: false,
 		filter(event, player) {
 			return event.card.name == "sha";
 		},

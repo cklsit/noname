@@ -207,6 +207,15 @@ const characters = {
 		skills: ["psnimou", "pskexue", "psjiefa"],
 		groupInGuozhan: "shu",
 	},
+	sm_shenmo_sunce: {
+		sex: "male",
+		group: "shen",
+		hp: 6,
+		skills: ["smxiaoyang", "smlinyuan"],
+		doubleGroup: ["shen", "devil"],
+		groupBorder: "devil",
+		groupInGuozhan: "wu",
+	},
 	sm_shenmo_sunquan: {
 		sex: "male",
 		group: "shen",
@@ -345,6 +354,12 @@ const characters = {
 		hp: 4,
 		skills: ["jxlianpo", "jxzhaoluan"],
 		groupInGuozhan: "qun",
+	},
+	ps_shen_jiaxu: {
+		sex: "male",
+		group: "shen",
+		hp: 3,
+		skills: ["psxiebing", "pszhongshi", "pszhaoluan"],
 	},
 	boss_zhaoyun: {
 		sex: "male",
@@ -1431,6 +1446,7 @@ const characters = {
 		group: "qun",
 		hp: 4,
 		skills: ["hm_dafu", "hm_jipin"],
+		img: "image/character/yudu.jpg",
 	},
 	hm_taosheng: {
 		sex: "male",
@@ -1984,7 +2000,7 @@ const characters = {
 		sex: "female",
 		group: "shu",
 		hp: 4,
-		skills: ["jdsbjieyin", "jdsbliangzhu", "sbxiaoji"],
+		skills: ["jdsbjieyin", "jdsbliangzhu", "jdsbxiaoji"],
 		dieAudios: ["sb_sunshangxiang"],
 		groupBorder: "wu",
 	},

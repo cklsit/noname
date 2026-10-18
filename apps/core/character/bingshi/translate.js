@@ -1,6 +1,12 @@
 import { lib, game, ui, get, ai, _status } from "noname";
 
 const translates = {
+	pot_zhaoyun: "势赵云",
+	pot_zhaoyun_prefix: "势",
+	potwuyi: "武翊",
+	potwuyi_info: "若你从手牌使用或打出过的基本牌牌名数不小于：1.每轮限一次，你可视为使用一张任意【杀】或【闪】；2.你使用基本牌无次数限制；3.你使用基本牌无距离限制；4.当你获得或失去手牌后，将你的手牌数调整为4。",
+	potcuifeng: "摧锋",
+	potcuifeng_info: "每轮限两次，每回合结束时，你可视为对当前回合角色使用一张【决斗】且此【决斗】造成伤害+X（X为本回合所有角色打出【杀】的次数）。",
 	pot_heqi: "势贺齐",
 	pot_heqi_prefix: "势",
 	potshanxi: "闪袭",
@@ -44,9 +50,9 @@ const translates = {
 	pot_chenqun: "势陈群",
 	pot_chenqun_prefix: "势",
 	potfaen: "法恩",
-	potfaen_info: "当有角色使用牌时，若上一张牌的使用者为你，你可选择：1.令其摸一张牌；2.令其弃置一张牌。若如此做，本回合下一张牌被使用时，你令使用者额外执行另一项。",
+	potfaen_info: "每回合限两次，有角色使用牌时，若上一张牌的使用者为你，你可选择：1.令其摸一张牌；2.令其弃置一张牌。若如此做，本回合下一张牌被使用时，使用者将额外执行另一项。",
 	potdingpin: "定品",
-	potdingpin_info: "每轮限一次，一个回合结束时，你可令本回合失去牌最多的一名角色执行一个额外的摸牌阶段。",
+	potdingpin_info: "每轮限一次，每回合结束时，你可令本回合失去牌最多的一名角色摸两张牌。",
 	pot_caozhen: "势曹真",
 	pot_caozhen_prefix: "势",
 	potsifeng: "伺锋",
@@ -111,7 +117,7 @@ const translates = {
 	pot_dongzhao: "势董昭",
 	pot_dongzhao_prefix: "势",
 	spmiaolve: "妙略",
-	spmiaolve_info: `游戏开始时，你获得两张${get.poptip("dz_mantianguohai")}；当你受到伤害后，你可以选择一项：1：摸两张牌；2：从牌堆或弃牌堆中获得一张智囊。`,
+	spmiaolve_info: `游戏开始时，你获得两张${get.poptip("dz_mantianguohai")}；当你受到伤害后，你可以选择一项：1：摸两张牌；2：从牌堆或弃牌堆中获得一张${get.poptip("rule_zhinang")}。`,
 	spyingjia: "迎驾",
 	spyingjia_info: "限定技，一名角色的回合结束后，若你本回合使用了大于等于两张同名锦囊牌，你可以弃置一张手牌，令一名角色执行一个额外的回合，此额外回合开始时，其摸两张牌。",
 	pot_lougui: "势娄圭",

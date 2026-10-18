@@ -58,8 +58,15 @@ async function main() {
 	const individuals: Record<IndividualType, IndividualContent[]> = {
 		character: [],
 		mode: [
-			{ name: "identity", index: "mode/identity.js", source: "mode/identity.js" },
+			{ name: "boss", index: "mode/boss.js", source: "mode/boss.js" },
+			{ name: "brawl", index: "mode/brawl.js", source: "mode/brawl.js" },
+			{ name: "chess", index: "mode/chess.js", source: "mode/chess.js" },
+			{ name: "connect", index: "mode/connect.js", source: "mode/connect.js" },
 			{ name: "doudizhu", index: "mode/doudizhu.js", source: "mode/doudizhu.js" },
+			{ name: "guozhan", index: getDirectoryEntry("mode", "guozhan"), source: "mode/guozhan" },
+			{ name: "identity", index: "mode/identity.js", source: "mode/identity.js" },
+			{ name: "single", index: "mode/single.js", source: "mode/single.js" },
+			{ name: "tafang", index: "mode/tafang.js", source: "mode/tafang.js" },
 		],
 		card: [],
 	};

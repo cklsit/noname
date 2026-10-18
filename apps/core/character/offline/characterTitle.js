@@ -27,6 +27,7 @@ export default {
 	pe_shen_zhonghui: "荡徊的蜚螭",
 	ps_shen_weiyan: "子午创世神",
 	ps_devil_weiyan: "戾骨噬汉魔",
+	sm_shenmo_sunce: "一身纳魔",
 	sm_shenmo_sunquan: "一念神魔",
 	pe_liuhui: "周天古率",
 	pe_baiqi: "大良造",
@@ -383,5 +384,6 @@ export default {
 	zc26_shen_huangyueying: "卧龙的点睛人",
 	shen_jiaxu: "文和乱武",
 	le_shen_jiaxu: "倒悬云衢",
+	ps_shen_jiaxu: "逆乱天下",
 	ps_shen_machao: "迅骛惊雷",
 };
