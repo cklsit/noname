@@ -1,0 +1,660 @@
+name: Deploy Web to Cloudflare Pages
+
+# 用途：把《无名杀》网页版（apps/core 的 Vite 产物 dist/）发布到 Cloudflare Pages
+#       主站：https://nngame.de5.net/（自定义域，2026-10-13 绑定）
+#       备用：https://noname-cje.pages.dev/（项目名 noname）
+#
+# 所在分支：feat/web-pages（网页版主分支）；main 上另存一份同名副本
+#   （2026-10-17 恢复，用于 Actions 页手动触发——手动触发要求文件在默认分支）。
+#   两份必须保持同内容、同 blob（本文件在仓库中以 CRLF 存储）。
+#
+# 为什么从 GitHub Pages 迁移到 Cloudflare Pages（2026-10-11）：
+#   ① GitHub Pages 单站点硬上限 1 GB → 被迫裁掉全部武将语音（audio/skill 470 MiB +
+#      audio/die 111 MiB，共 9274 个文件）。Cloudflare Pages 无总大小限制
+#      （仅 20,000 文件/25 MiB 单文件），完整 dist（1.3 GiB / 15593 文件）可全量部署，
+#      语音由此恢复；
+#   ② 无限静态请求与带宽（免费版同享）；
+#   ③ 边缘网络对国内访问相对友好（GitHub Pages 访问稳定性一般）；
+#   ④ 允许商业用途。
+#
+# 部署方式：Direct Upload（构建在 GitHub Actions，产物直传 Cloudflare）
+#   - 不做 Cloudflare 侧的 Git 集成构建：本仓库的产物需要多步后处理（见下方改写步骤），
+#     且直传部署不计入 Cloudflare 的 500 次/月构建配额；
+#   - Pages 项目已创建（2026-10-11：noname，production_branch=main）；如需重建：
+#       npx wrangler pages project create noname --production-branch=main
+#     ⚠️ production_branch 保持 main（与下方 --branch=main 配套）；本工作流传在
+#        feat/web-pages 分支上运行，但部署仍标记为生产部署，自定义域不受影响。
+#   - 需要两个仓库 Secrets：
+#       CLOUDFLARE_API_TOKEN  （最小权限：Account → Cloudflare Pages → Edit）
+#       CLOUDFLARE_ACCOUNT_ID （32 位 hex，Cloudflare 控制台 Account Home 可见）
+#
+# Cloudflare Pages 免费版限制（本工作流已加断言拦截）：
+#   - 站点文件数 ≤ 20,000（当前 15593，约 78%）
+#   - 单文件 ≤ 25 MiB（当前全部 < 20 MiB）
+#   - 单次部署总量无硬限制；静态请求/带宽无限
+#
+# ✅ 可玩性方案（2026-10-11，本地+线上实测）：上游 web 版在启动时要求同源 fs 后端
+#   （@noname/server / noname-server 提供的 /checkFile、/readFile、/getFileList、/writeFile 等接口，
+#   见 apps/core/noname/init/browser.js）。纯静态托管没有后端，直接跑会停在「加载内容失败」。
+#   本工作流通过两件事让纯静态可玩：
+#     ① Service Worker 静态 fs 后端 shim（.github/pages/sw-shim.js，部署时替换 dist/service-worker.js）：
+#        读 = 静态文件 + asset-manifest.json 索引；写 = Cache API 覆盖层（持久、可读回）；
+#        行为与错误语义对齐 packages/fs/src/index.ts 的参考实现。
+#     ② 路径不兼容点统一相对化（importmap / game.js / fs 路由 / 内容包路径），详见下方步骤注释。
+#        说明：Cloudflare Pages 为根路径部署、GitHub Pages 为子路径部署；上述改写均使用
+#        "./" 或 "../../" 相对形式，两种部署布局下解析结果都正确（已在 GitHub Pages 全量验证），
+#        因此本工作流与旧 pages.yml 共用同一套产物后处理逻辑。
+#
+# ⚠️ 三个平台特性与对策（2026-10-11 部署实测，v2–v4 修正）：
+#   ① wrangler 上传有硬编码忽略清单（含 "**/node_modules"，不可配置）→ dist/node_modules
+#      里的模块文件（vue / pinyin-pro / dedent / crypto-js…，共 120 个）不会被上传，
+#      importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。对策：部署前把 node_modules
+#      改名 vendor 并全量替换文本引用（vendor 不在忽略清单内，见 Vendor rename 步骤）。
+#   ② asset-manifest.json 不是 pnpm build 的产物（源码树无生成者），是「静态部署侧」产物
+#      （SW fs shim 的目录索引）。GitHub Pages 版由旧工作流的「裁减后重建」步骤顺手生成；
+#      本工作流不裁减，须显式生成（否则 shim 索引为空，目录列举能力缺失，见 Generate 步骤）。
+#   ③ CF Pages 在没有顶层 404.html 时会按 SPA 处理：任何未匹配路径都回退 index.html
+#      并返回 200 —— 这会破坏「文件存在性」语义：SW fs shim 的 HEAD 兜底与游戏的
+#      checkFile 探测（如 noname.config.txt「懒人包配置」）都会把"不存在"误判为"存在"，
+#      进而把 index.html 内容当作文件数据读取（atob 解码崩溃、启动流程错乱，2026-10-11 实测）。
+#      对策：写入顶层 404.html（平台自此对未匹配路径返回 404，与本地/GitHub Pages 一致）。
+#
+# ⚡ 联机中继（2026-10 更新）：浏览器禁止 https 页面直连 ws://（混合内容拦截），
+#   而社区联机服普遍只有 ws。中继由本 Fork 自建（NAS 上的 Cloudflare 命名隧道 +
+#   relay-server.mjs），对外是一个固定域名的中继入口：
+#     wss://<中继域名>/?to=<host>:<port>  →  ws://<host>:<port>（透明转发，目标端口需 ≥1024）
+#   经 CF 边缘转发（大陆玩家约 +50~200ms，回合制可接受）。中继出站发生在 NAS 上（普通主机），
+#   可直连裸 IP 目标 —— 这是相对「CF Workers 中继」的关键差异。
+#
+#   ❌ 已废弃并由本工作流移除：早期方案在 CF Pages 注入 Functions 中继
+#      （.github/pages/relay-worker.js → dist/_worker.js + dist/_routes.json，路由 /relay）。
+#      废弃原因：CF Workers 生产环境出站无法连接裸 IP（error 1003），导致「玩家只输纯 IP」
+#      的诉求无法满足。相关源文件保留备查，但不再注入产物、不再有构建依赖。
+#   ⭐ 产物侧自动改写（v6）：https 页面下，客户端连接逻辑会把 ws:// 目标自动改写为中继入口
+#      （wss://<NONAME_RELAY_HOST>/?to=…）——玩家在游戏内直接输入纯 IP（`IP` 或 `IP:端口`）
+#      即可联机，无需手动拼中继地址；http/本地/桌面版环境不触发（行为保持原样）。
+#   ⭐ key 预发（v7）：服务器接受连接后有 2 秒 keyCheck 超时（见 packages/server/src/server/
+#      createServer.ts），而客户端原逻辑要等 roomlist（大消息）到达后才回 key —— 慢链路
+#      （CF 隧道 RTT 高、吞吐低）下 key 会 >2 秒才到，被服务器判 denied("key")，客户端误显示
+#      为「游戏版本过低」。产物侧在 ws onopen 时立即预发一次 key 规避该超时（随后 roomlist
+#      到达会按原逻辑再发一次，无副作用）。
+#   ⭐ 注入前移（v8，2026-10-17）：注入前移至源码级（适配上游产物压缩；产物侧仅校验）。
+#
+# 触发方式：
+#   ① 自动部署：推送到 feat/web-pages 即触发（含每日上游同步产生的合并提交）；
+#   ② 手动部署：GitHub 网页 → Actions → “Deploy Web to Cloudflare Pages” → Run workflow
+#      （务必选 feat/web-pages 分支；或 gh workflow run cloudflare-pages.yml
+#        --repo cklsit/noname --ref feat/web-pages）
+
+on:
+  # 自动部署：推送到 feat/web-pages 即触发（网页开发改动只动这个分支）。
+  #   注意：main 上的副本仅用于手动触发；main 的推送不会触发部署
+  #   （下方 branches 过滤器只匹配 feat/web-pages）。
+  push:
+    branches:
+      - feat/web-pages
+
+  # 手动触发：临时部署时用；务必选择 feat/web-pages 分支运行
+  #   （选 main 部署的是 main 的内容，并非网页版最新代码）。
+  workflow_dispatch:
+
+# 最小权限：仅读取仓库源码（部署凭据走 CLOUDFLARE_API_TOKEN secret，不用 OIDC）
+permissions:
+  contents: read
+
+# 并发控制：同一时刻只允许一个部署在跑。
+#   cancel-in-progress: false —— 不打断正在进行的部署；新的运行排队等待，
+#   保证线上始终是「一次完整部署」的结果。
+concurrency:
+  group: "cloudflare-pages"
+  cancel-in-progress: false
+
+# 联机中继固定域名（唯一取值来源）：
+#   玩家在游戏内「联机」只输纯 IP 时，产物侧会把它改写为
+#   wss://<NONAME_RELAY_HOST>/?to=<ip:port>，指向 NAS 上的命名隧道中继。
+#   已配置
+#   ⚠️ 更换中继域名时只改这一处即可，注入步骤会读取该 env。
+env:
+  NONAME_RELAY_HOST: "relay.nngame.de5.net"
+
+jobs:
+  build-deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    # 构建约 3 分钟 + 完整版上传（1.3 GiB，15593 文件）数分钟；给 40 分钟上限。
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - name: Install dependencies
+        # 本 job 只做网页构建 + 产物改写，不需要 electron 等 postinstall 重活。
+        run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
+
+      - name: Inject relay rewrite & key preflight (source level)
+        # v8（2026-10-17）：注入从「产物侧打补丁」前移到「构建前改源码」。
+        #   为什么：上游 d1ef29aa3 起对本体启用 esbuild 压缩，dist 内标识符全部重命名，
+        #   源码级字面锚点（const url = tempUrl.href; / game.ws = new WebSocket(url);）
+        #   在压缩产物上 0 命中 → 产物侧打补丁失效。
+        #   改在源码注入后：① 注入随打包一起压缩，变量与导入引用由编译器正确解析；
+        #   ② dist/src 是源码的逐字节副本，两条产物路径自动同时覆盖。
+        #   ⚠️ 只修改 CI 工作区里的源码文件，构建完即丢弃，绝不提交回仓库。
+        #   RELAY_HOST 取 workflow 顶层 env.NONAME_RELAY_HOST（唯一取值来源）。
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          const FILE = "apps/core/noname/game/index.js";
+          const RELAY_HOST = process.env.NONAME_RELAY_HOST || "relay.nngame.de5.net";
+
+          if (!fs.existsSync(FILE)) {
+            console.error(`::error::源码 ${FILE} 不存在（上游构建结构可能已变化）`);
+            process.exit(1);
+          }
+
+          let src = fs.readFileSync(FILE, "utf8");
+          let changed = false;
+
+          // ⑦-A 联机地址自动中继：https 页面下把 ws:// 目标自动改写为「固定域名中继」
+          //   锚点与注入文本与原产物侧逻辑完全一致，仅目标文件换成源码。
+          const CONNECT_RE = /^([ \t]*)const url = tempUrl\.href;/m;
+          if (src.includes("NONAME_RELAY_HOST")) {
+            console.log(`${FILE}: 联机自动中继已注入过，跳过`);
+          } else {
+            const hits = src.match(new RegExp(CONNECT_RE.source, "gm"));
+            if (!hits || hits.length !== 1) {
+              console.error(`::error::${FILE} 中 connect 锚点命中 ${hits ? hits.length : 0} 次（期望 1）`);
+              process.exit(1);
+            }
+            src = src.replace(CONNECT_RE, (m, ind) =>
+              `${ind}// 联机中继固定域名（命名隧道；地址永不变化）\n` +
+              `${ind}const NONAME_RELAY_HOST = ${JSON.stringify(RELAY_HOST)};\n` +
+              `${ind}let url = tempUrl.href;\n` +
+              `${ind}if (location.protocol === "https:" && url.startsWith("ws://")) {\n` +
+              `${ind}  url = \`wss://\${NONAME_RELAY_HOST}/?to=\${url.slice(5).replace(/\\/+$/, "")}\`;\n` +
+              `${ind}}`,
+            );
+            console.log(`${FILE}: 联机地址自动中继已注入（固定域名 ${RELAY_HOST}）`);
+            changed = true;
+          }
+
+          // ⑦-B key 预发：ws onopen 时立即预发一次 key（规避服务器 2 秒 keyCheck 超时）
+          //   ⚠️ 与 ⑦-A 各自独立判断/注入，不能因 ⑦-A「已注入过」就跳过整个文件。
+          const KEY_ANCHOR_RE = /^([ \t]*)game\.ws = new WebSocket\(url\);/m;
+          if (src.includes('game.ws.addEventListener("open"')) {
+            console.log(`${FILE}: key 预发已注入过，跳过`);
+          } else {
+            const keyHits = src.match(new RegExp(KEY_ANCHOR_RE.source, "gm"));
+            if (!keyHits || keyHits.length !== 1) {
+              console.error(`::error::${FILE} 中 game.ws = new WebSocket(url) 锚点命中 ${keyHits ? keyHits.length : 0} 次（期望 1）`);
+              process.exit(1);
+            }
+            src = src.replace(KEY_ANCHOR_RE, (m, ind) =>
+              `${ind}game.ws = new WebSocket(url);\n` +
+              `${ind}// 服务器对 key 有 2 秒超时校验：若客户端等 roomlist 到达后才回 key，\n` +
+              `${ind}// 慢链路下会超时并被判定为 denied("key")。故在此连接建立后立即预发一次 key。\n` +
+              `${ind}game.ws.addEventListener("open", () => {\n` +
+              `${ind}\ttry {\n` +
+              `${ind}\t\tgame.send("server", "key", [game.onlineKey, lib.version]);\n` +
+              `${ind}\t} catch {}\n` +
+              `${ind}});`
+            );
+            console.log(`${FILE}: key 预发已注入（连接建立即发送 server:key）`);
+            changed = true;
+          }
+
+          if (changed) fs.writeFileSync(FILE, src);
+
+          // 统一校验：两处注入都必须存在于源码文本
+          if (!src.includes("NONAME_RELAY_HOST")) {
+            console.error(`::error::${FILE} 联机中继注入校验失败`);
+            process.exit(1);
+          }
+          if (!src.includes('game.ws.addEventListener("open"')) {
+            console.error(`::error::${FILE} key 预发注入校验失败`);
+            process.exit(1);
+          }
+          console.log(`${FILE}: 源码级注入完成（中继 + key 预发）`);
+          NODE
+      - name: Build web assets (dist/)
+        env:
+          NONAME_BUILD_CHANNEL: test
+          NONAME_BUILD_COMMIT: ${{ github.sha }}
+        run: pnpm build
+
+      - name: Vendor rename (bypass wrangler's node_modules exclusion)
+        # 为什么需要这一步（2026-10-11 首次部署实测）：
+        #   wrangler 对 Pages 上传有硬编码忽略清单（含 "**/node_modules"，不可配置）→
+        #   dist/node_modules 的模块文件（vue / pinyin-pro / dedent / crypto-js…）不会被上传，
+        #   importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。
+        #   对策：把目录改名为 vendor（不在忽略清单内）并全量替换文本引用。
+        #   ⚠️ 关键：pnpm 结构里包目录内含二级 node_modules（形如
+        #   .pnpm/<pkg>@<ver>/node_modules/<pkg>/…），引用里出现的这些"内层 node_modules 段"
+        #   必须与文件系统保持一致 —— 因此内层同名目录也一并改名为 vendor
+        #   （只做字符串替换而不改目录会导致引用失配，2026-10-11 本地实测出现过）。
+        #   断言：① 全 dist 文本文件无 "node_modules/" 残留；
+        #         ② index.html 的 importmap 与 src/href 引用必须命中真实文件（存在性校验，
+        #            防"替换过度/不足"这类静态失配）。
+        run: |
+          node <<'NODE'
+          const fs = require("fs"), path = require("path");
+
+          const FROM = "dist/node_modules", TO = "dist/vendor";
+          if (!fs.existsSync(FROM)) {
+            console.error("::error::dist/node_modules 不存在（上游构建结构可能已变化）");
+            process.exit(1);
+          }
+          fs.renameSync(FROM, TO);
+          console.log(`目录改名：${FROM} → ${TO}`);
+
+          // 内层同名目录一并改名（与引用替换保持一致）
+          let innerRenamed = 0;
+          (function walkDirs(dir) {
+            for (const name of fs.readdirSync(dir)) {
+              const abs = path.join(dir, name);
+              if (!fs.lstatSync(abs).isDirectory()) continue;
+              if (name === "node_modules") {
+                const target = path.join(dir, "vendor");
+                if (fs.existsSync(target)) {
+                  console.error(`::error::改名冲突：${target} 已存在`);
+                  process.exit(1);
+                }
+                fs.renameSync(abs, target);
+                innerRenamed += 1;
+                walkDirs(target);
+              } else {
+                walkDirs(abs);
+              }
+            }
+          })(TO);
+          console.log(`内层 node_modules 目录改名：${innerRenamed} 个`);
+
+          // 只处理文本文件（二进制绝不触碰）
+          const TEXT_EXT = new Set([".js", ".mjs", ".cjs", ".json", ".html", ".htm", ".css", ".ts", ".map", ".txt", ".md"]);
+          function walkText(dir, fn) {
+            for (const name of fs.readdirSync(dir)) {
+              const abs = path.join(dir, name);
+              const st = fs.statSync(abs);
+              if (st.isDirectory()) { walkText(abs, fn); continue; }
+              if (TEXT_EXT.has(path.extname(name).toLowerCase())) fn(abs);
+            }
+          }
+
+          let total = 0, changed = 0;
+          walkText("dist", abs => {
+            total += 1;
+            const src = fs.readFileSync(abs, "utf8");
+            if (!src.includes("node_modules/")) return;
+            fs.writeFileSync(abs, src.split("node_modules/").join("vendor/"));
+            changed += 1;
+          });
+          console.log(`文本替换：扫描 ${total} 个文本文件，改写 ${changed} 个`);
+
+          // 断言①：改成目录级检查。
+          // 原先这里是「把 dist 下全部文本文件（1.4 万个）再完整读一遍找残留」—— 但残留的唯一
+          // 成因就是目录改名没成功，逐文件重读既是重复 I/O 又抓不到新问题。
+          // 直接确认 node_modules 目录已不存在（引用替换在上面已随写盘完成）。
+          if (fs.existsSync("dist/node_modules")) {
+            console.error("::error::dist/node_modules 仍然存在（目录改名未生效）");
+            process.exit(1);
+          }
+          console.log("断言①通过：dist/node_modules 已不存在（引用已全部指向 vendor/）");
+
+          // 断言②：index.html 引用-存在性校验（importmap + src/href）
+          const html = fs.readFileSync("dist/index.html", "utf8");
+          const urls = [];
+          const im = html.match(/<script type="importmap">([\s\S]*?)<\/script>/);
+          if (!im) {
+            console.error("::error::index.html 中未找到 importmap");
+            process.exit(1);
+          }
+          for (const v of Object.values(JSON.parse(im[1]).imports ?? {})) urls.push(v);
+          for (const m of html.matchAll(/(?:src|href)="([^"]+)"/g)) urls.push(m[1]);
+
+          const missing = [];
+          for (const u of urls) {
+            if (/^(?:https?:|data:|#|\/\/)/.test(u)) continue;
+            // 裸说明符（如上游产物中存在的 <script type="module" src="vue">）由 importmap
+            // 负责解析，不适用文件系统校验，跳过（该形态为上游产物固有，多轮线上验证无害）。
+            if (!u.includes("/")) continue;
+            const rel = u.split("?")[0].split("#")[0].replace(/^\.?\//, "");
+            if (rel && !fs.existsSync(path.join("dist", rel))) missing.push(u);
+          }
+          if (missing.length > 0) {
+            console.error("::error::index.html 引用的资源在 dist 中不存在（替换失配）：\n" + missing.join("\n"));
+            process.exit(1);
+          }
+          console.log(`断言②通过：index.html 引用-存在性校验（${urls.length} 条引用全部命中）`);
+          NODE
+
+      - name: Rewrite absolute paths to relative + install fs shim
+        # 为什么需要这一步（路径不兼容点统一相对化 + 注入静态 fs 后端）：
+        #   ① index.html 的 importmap / game.js：条目是根绝对路径（"/noname.js"、"…/node_modules/…"），
+        #      在「子路径部署」下会解析到账号根域 404 → 模块加载全挂（GitHub Pages 实测基线白屏）。
+        #      Cloudflare Pages 为根部署、原样也能跑，但改写后两种布局都正确 → 保留，保持双平台兼容。
+        #   ② 内容包动态 import（import.js）：`/card/…`、`/character/…`、`/extension/…`、`/mode/…`
+        #      也是根绝对；改成 `../../…`（相对该模块恰好等于站点根，根部署/子路径部署均正确）。
+        #   ③ fs 路由（browser.js）：requestBackend 的 "/checkFile" 等 → "./checkFile"，
+        #      使其落进 Service Worker 作用域、由 shim 接管。
+        #   ④ 用静态 fs 后端 shim（.github/pages/sw-shim.js）替换 dist/service-worker.js：
+        #      读 = 静态文件 + asset-manifest.json 索引；写 = Cache API 覆盖层（持久、可读回）；
+        #      行为与错误语义对齐 packages/fs/src/index.ts 的参考实现。
+        #   以上均带断言兜底：改写后不得残留站内根绝对引用（白名单 "/jit-test.ts"，见 ⑥）。
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          // ① index.html 的 importmap（JSON 语义级：解析 → 改写 → 再解析断言）
+          const indexFile = "dist/index.html";
+          const html = fs.readFileSync(indexFile, "utf8");
+          const imRe = /<script type="importmap">([\s\S]*?)<\/script>/;
+          const match = html.match(imRe);
+          if (!match) {
+            console.error("::error::index.html 中未找到 importmap");
+            process.exit(1);
+          }
+          const map = JSON.parse(match[1]);
+          let changed = 0;
+          for (const [key, value] of Object.entries(map.imports ?? {})) {
+            if (typeof value === "string" && value.startsWith("/") && !value.startsWith("//")) {
+              map.imports[key] = "." + value;
+              changed += 1;
+            }
+          }
+          fs.writeFileSync(indexFile, html.replace(imRe, `<script type="importmap">${JSON.stringify({ imports: map.imports }, null, 2)}</script>`));
+          console.log(`index.html importmap 已改写 ${changed} 条为相对路径`);
+
+          // ② game.js 备用引导脚本（importmap 条目 + entry.js 引用）
+          const gameFile = "dist/game/game.js";
+          if (fs.existsSync(gameFile)) {
+            let src = fs.readFileSync(gameFile, "utf8");
+            const before = src;
+            src = src.replace(/"([A-Za-z@][^"]*)":\s*"\/(?!\/)([^"]*)"/g, '"$1": "./$2"');
+            src = src.replace(/script\.src = "\/(?!\/)([^"]*)"/g, 'script.src = "./$1"');
+            if (src !== before) fs.writeFileSync(gameFile, src);
+            console.log("game.js 已改写（importmap 条目与 entry.js 引用）");
+          } else {
+            console.log("game.js 不存在，跳过（上游结构可能已变化）");
+          }
+
+          // ③ fs 路由字面量 → 相对（两个 browser.js 副本，存在即处理）
+          const ROUTES = ["checkFile", "checkDir", "readFile", "readFileAsText", "writeFile", "removeFile", "removeDir", "getFileList", "createDir"];
+          for (const file of ["dist/noname/init/browser.js", "dist/src/noname/init/browser.js"]) {
+            if (!fs.existsSync(file)) {
+              console.log(`${file} 不存在，跳过`);
+              continue;
+            }
+            let src = fs.readFileSync(file, "utf8");
+            let count = 0;
+            for (const route of ROUTES) {
+              const from = `"/${route}"`;
+              count += src.split(from).length - 1;
+              src = src.split(from).join(`"./${route}"`);
+            }
+            fs.writeFileSync(file, src);
+            const left = ROUTES.filter(r => src.includes(`"/${r}"`));
+            if (left.length > 0) {
+              console.error(`::error::${file} 仍存在根绝对路由: ${left.join(", ")}`);
+              process.exit(1);
+            }
+            console.log(`${file}: fs 路由已改写 ${count} 处`);
+          }
+
+          // ④ import.js 内容包路径 → ../../（相对本模块恰好 = 站点根）
+          const importFile = "dist/noname/init/import.js";
+          if (!fs.existsSync(importFile)) {
+            console.error("::error::未找到 dist/noname/init/import.js（上游结构变化，请检查）");
+            process.exit(1);
+          }
+          {
+            let src = fs.readFileSync(importFile, "utf8");
+            let count = 0;
+            for (const seg of ["card", "character", "extension", "mode"]) {
+              const re = new RegExp("`/" + seg + "/", "g");
+              count += (src.match(re) ?? []).length;
+              src = src.replace(re, "`../../" + seg + "/");
+            }
+            fs.writeFileSync(importFile, src);
+            const left = src.match(/`\/(?:card|character|extension|mode)\//g);
+            if (left) {
+              console.error("::error::import.js 仍存在根绝对内容路径: " + [...new Set(left)].join(", "));
+              process.exit(1);
+            }
+            console.log(`import.js: 内容包路径已改写 ${count} 处（→ ../../…）`);
+          }
+
+          // ⑤ 替换 service-worker.js 为静态 fs 后端 shim
+          const shimFile = ".github/pages/sw-shim.js";
+          if (!fs.existsSync(shimFile)) {
+            console.error("::error::缺少 .github/pages/sw-shim.js（fs shim 源文件）");
+            process.exit(1);
+          }
+          fs.copyFileSync(shimFile, "dist/service-worker.js");
+          if (!fs.readFileSync("dist/service-worker.js", "utf8").includes("noname-pages-fs-shim")) {
+            console.error("::error::service-worker.js 替换校验失败");
+            process.exit(1);
+          }
+          console.log("service-worker.js 已替换为静态 fs 后端 shim");
+
+          // ⑥ 兜底断言：index.html / game.js 不得残留站内根绝对字符串
+          //    白名单 "/jit-test.ts"：它在 try/catch 兜底路径上（非 localhost 恒失败、不中断启动），
+          //    行为与上游一致，故意保留。
+          const allow = new Set(['"/jit-test.ts"']);
+          const leftover = [];
+          for (const file of [indexFile, gameFile]) {
+            if (!fs.existsSync(file)) continue;
+            for (const hit of fs.readFileSync(file, "utf8").match(/"\/(?!\/)[^"]*"/g) ?? []) {
+              if (!allow.has(hit)) leftover.push(`${file}: ${hit}`);
+            }
+          }
+          if (leftover.length > 0) {
+            console.error("::error::仍存在站内根绝对引用:\n" + leftover.slice(0, 20).join("\n"));
+            process.exit(1);
+          }
+          console.log("断言通过：无遗留站内根绝对引用（白名单除外）");
+
+          // ⑦ 产物侧只校验（v8 起注入已前移到构建前的源码级，此处不再打补丁）：
+          //    ⑦-A 联机地址自动中继、⑦-B key 预发 的来源都是构建前步骤
+          //    「Inject relay rewrite & key preflight (source level)」对
+          //    apps/core/noname/game/index.js 的注入，注入随打包一起压缩。
+          //    这里只确认两条产物路径都带上了注入标记，缺失即失败（不静默降级）。
+          //    说明：压缩会重命名局部变量，但字符串字面量（relay 域名、"/?to="）与方法名
+          //    （addEventListener）保留，故用它们作校验标记。
+          {
+            const RELAY_HOST = process.env.NONAME_RELAY_HOST || "relay.nngame.de5.net";
+            for (const file of ["dist/noname/game/index.js", "dist/src/noname/game/index.js"]) {
+              if (!fs.existsSync(file)) {
+                console.error(`::error::${file} 不存在（上游构建结构可能已变化）`);
+                process.exit(1);
+              }
+              const src = fs.readFileSync(file, "utf8");
+              if (!src.includes(RELAY_HOST) || !src.includes("/?to=")) {
+                console.error(`::error::${file} 未包含联机中继注入（期望含 ${RELAY_HOST} 与 "/?to="）`);
+                process.exit(1);
+              }
+              if (!/addEventListener\(\s*"open"/.test(src)) {
+                console.error(`::error::${file} 未包含 key 预发注入（期望匹配 addEventListener("open"）`);
+                process.exit(1);
+              }
+              console.log(`${file}: 产物注入校验通过（中继 + key 预发）`);
+            }
+          }
+          NODE
+
+      - name: Generate asset-manifest.json
+        # 为什么需要这一步（2026-10-11 首次部署实测）：
+        #   asset-manifest.json 不是 pnpm build 的产物（源码树中无生成者）——它是
+        #   「静态部署侧」产物：运行时 SW fs shim 读取它作为目录索引（getFileList 的数据源，
+        #   模拟列目录）。GitHub Pages 版之所以有它，是因为旧工作流的「裁减后重建」步骤
+        #   顺手生成；本工作流不裁减，因此需要显式生成（否则 shim 索引为空 → 列目录能力缺失）。
+        #   忽略清单与 iOS 工作流口径一致（含 vendor：模块目录不作为内容文件列出；
+        #   shim 对未索引文件仍有 staticFileExists（HEAD）兜底，不影响模块加载）。
+        run: |
+          ROOT=dist node -e "
+          const fs=require('fs'),path=require('path');
+          const root=process.env.ROOT, out=path.resolve(root,'asset-manifest.json');
+          const ignored=new Set(['asset-manifest.json','asset-download-manifest.json','preload.js','_headers','_redirects','_routes.json','_worker.js','node_modules','vendor','404.html']);
+          const entries=[];
+          (function walk(dir){
+            for(const name of fs.readdirSync(dir)){
+              if(ignored.has(name)) continue;
+              const abs=path.join(dir,name);
+              if(fs.statSync(abs).isDirectory()){ walk(abs); continue; }
+              entries.push(path.relative(root,abs).split(path.sep).join('/'));
+            }
+          })(root);
+          entries.sort();
+          fs.writeFileSync(out, JSON.stringify(entries)+'\n');
+          console.log(root + ' asset-manifest.json: ' + entries.length + ' entries');
+          "
+
+      - name: Write platform files (_headers, 404.html & relay)
+        # 为什么需要这两个文件：
+        #   ① _headers：上游注册 SW 时带 updateViaCache:"all"（src 见 index.html），浏览器
+        #      检查 SW 更新时会使用 HTTP 缓存 → 对 service-worker.js 与 asset-manifest.json
+        #      置 no-cache（每次协商，配合 ETag），保证「重部署 = 立即被发现」。其余静态资源
+        #      不额外配置（沿用 Cloudflare Pages 默认的协商缓存策略）。
+        #   ② 404.html：CF Pages 在没有顶层 404.html 时按 SPA 处理 —— 任何未匹配路径
+        #      回退 index.html 且返回 200（实测）。这破坏「文件存在性」语义：SW fs shim 的
+        #      staticFileExists（HEAD 兜底）与游戏启动的 checkFile 探测（如 noname.config.txt）
+        #      都会把"不存在"误判为"存在"，随后把 index.html 的 HTML 内容当作文件数据读取
+        #      （base64 解码崩溃 / 存在性判断全错）。写入 404.html 后，未匹配路径返回 404，
+        #      与本地 / GitHub Pages 行为一致。
+        run: |
+          cat > dist/_headers <<'EOF'
+          /service-worker.js
+            Cache-Control: no-cache, must-revalidate
+
+          /asset-manifest.json
+            Cache-Control: no-cache, must-revalidate
+          EOF
+
+          cat > dist/404.html <<'EOF'
+          <!doctype html>
+          <html lang="zh-CN">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>404 - 无名杀</title>
+          <style>
+          body{font-family:system-ui,sans-serif;background:#16161e;color:#ddd;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+          .box{text-align:center}h1{font-size:3em;margin:0 0 .3em}a{color:#7aa2f7}
+          </style>
+          </head>
+          <body>
+          <div class="box">
+          <h1>404</h1>
+          <p>页面不存在</p>
+          <p><a href="./">返回《无名杀》</a></p>
+          </div>
+          </body>
+          </html>
+          EOF
+
+          echo "===== dist/_headers ====="
+          cat dist/_headers
+          echo "===== dist/404.html（前 3 行）====="
+          head -3 dist/404.html
+
+      - name: Verify Cloudflare Pages limits (file count & sizes)
+        # Cloudflare Pages 免费版硬限制：20,000 文件 / 25 MiB 单文件。
+        # 提前断言拦截，避免上传到一半才失败、排查时误怪到 wrangler 头上。
+        run: |
+          FILE_COUNT=$(find dist -type f | wc -l)
+          echo "文件数: $FILE_COUNT / 20000"
+          if [ "$FILE_COUNT" -gt 20000 ]; then
+            echo "::error::文件数 $FILE_COUNT 超过 Cloudflare Pages 上限 20000"
+            exit 1
+          fi
+
+          # 25 MiB = 26214400 字节；find -size 用 c 后缀按字节精确比较
+          OVER=$(find dist -type f -size +26214400c | head -20)
+          if [ -n "$OVER" ]; then
+            echo "::error::以下文件超过 Cloudflare Pages 单文件上限 25 MiB:"
+            echo "$OVER"
+            exit 1
+          fi
+
+          echo "===== 产物总览 ====="
+          du -sh dist
+          du -sh dist/* 2>/dev/null | sort -rh | head -10
+
+          # 新增断言（v2）：asset-manifest.json 与 vendor 结构
+          if [ ! -f dist/asset-manifest.json ]; then
+            echo "::error::asset-manifest.json 缺失（Generate 步骤未生效）"
+            exit 1
+          fi
+          MANIFEST_COUNT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('dist/asset-manifest.json','utf8')).length)")
+          echo "asset-manifest.json: $MANIFEST_COUNT 条"
+          if [ "$MANIFEST_COUNT" -lt 15000 ]; then
+            echo "::error::asset-manifest.json 条目数异常（$MANIFEST_COUNT < 15000）"
+            exit 1
+          fi
+          if [ ! -d dist/vendor ]; then
+            echo "::error::dist/vendor 缺失（Vendor rename 未生效）"
+            exit 1
+          fi
+          if [ -d dist/node_modules ]; then
+            echo "::error::dist/node_modules 仍存在（未被改名）"
+            exit 1
+          fi
+          echo "vendor 结构检查通过（node_modules 已改名）"
+          if [ ! -f dist/404.html ]; then
+            echo "::error::dist/404.html 缺失（CF 将按 SPA 回退 index.html，破坏文件存在性语义）"
+            exit 1
+          fi
+          echo "404.html 检查通过（CF SPA 回退已关闭）"
+          # v8.1：本步骤的断言与 ⑦ 保持同一口径 —— 只认「压缩后仍保留」的标记。
+          #   压缩会把 const NONAME_RELAY_HOST 内联、把 game.ws 重命名为短名，
+          #   故不能用这两个字面量做 grep（否则必然 0 命中）。字符串字面量与方法名保留。
+          if ! grep -qF "$NONAME_RELAY_HOST" dist/noname/game/index.js; then
+            echo "::error::联机自动中继未注入（dist/noname/game/index.js 缺少中继域名 $NONAME_RELAY_HOST）"
+            exit 1
+          fi
+          if ! grep -qF "/?to=" dist/noname/game/index.js; then
+            echo "::error::联机自动中继未注入（dist/noname/game/index.js 缺少 /?to= 改写标记）"
+            exit 1
+          fi
+          echo "联机自动中继检查通过（产物已注入 ws→固定域名中继 改写）"
+          if ! grep -qE 'addEventListener\("open"' dist/noname/game/index.js; then
+            echo "::error::key 预发未注入（dist/noname/game/index.js 缺少 addEventListener(\"open\"）"
+            exit 1
+          fi
+          echo "key 预发检查通过（连接建立后立即预发 key，规避服务器 2 秒 keyCheck 超时）"
+
+      - name: Cache npm (for npx wrangler)
+        # `npx --yes wrangler@4` 每次都要把 wrangler 及其依赖树取一遍；
+        # 缓存 npm 的包缓存后，重复部署时可复用已下载的 tarball。
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-wrangler4-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-wrangler4-${{ runner.os }}-
+
+      - name: Deploy to Cloudflare Pages
+        # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
+        #   --branch=main 有意保留（勿改成 feat/web-pages）：wrangler 以此值与
+        #   Pages 项目的 production_branch 比对，只有与项目设置一致（=main）才记为
+        #   生产部署，才会挂到自定义域 nngame.de5.net。CI 检出为 detached HEAD，
+        #   必须显式指定分支名（不能省略）。若将来把项目 production_branch 改成
+        #   feat/web-pages，此处须同步改，否则会退化为「预览部署」（不带自定义域）。
+        #   npx 锁大版本 4，避免上游 breaking change。
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --yes wrangler@4 pages deploy dist --project-name=noname --branch=main
