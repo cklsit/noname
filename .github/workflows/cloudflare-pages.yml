@@ -116,6 +116,11 @@ concurrency:
 #   ⚠️ 更换中继域名时只改这一处即可，注入步骤会读取该 env。
 env:
   NONAME_RELAY_HOST: "relay.nngame.de5.net"
+  # 工具链版本集中定义；wrangler 锁到精确版本，避免浮动小版本导致部署行为变化，
+  # 同时让下面的 npm 缓存键真正对应到版本（而不是无关的 package.json 哈希）。
+  NODE_VERSION: "24"
+  PNPM_VERSION: "10"
+  WRANGLER_VERSION: "4.151.1"
 
 jobs:
   build-deploy:
@@ -127,18 +132,34 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          # 本工作流不通过 git 推送任何内容，无需把令牌留在 .git/config 里。
+          persist-credentials: false
+
+      - name: Verify web deployment inputs
+        # 本工作流依赖 .github/pages/sw-shim.js；该文件只存在于 feat/web-pages
+        #（main 上仅有本工作流的副本，供 Actions 页出现手动触发按钮）。
+        # 提前校验，避免构建数分钟后才在改写步骤失败。
+        run: |
+          if [ ! -f .github/pages/sw-shim.js ]; then
+            echo "::error::缺少 .github/pages/sw-shim.js：本工作流必须在 feat/web-pages 分支运行（手动触发时请选择该分支）"
+            exit 1
+          fi
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
         with:
-          version: 10
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: "pnpm"
+          # sharedWorkspaceLockfile: false → 仓库有多份 lockfile；只盯根 lockfile
+          # 会在子包依赖变化时假命中缓存。
+          cache-dependency-path: "**/pnpm-lock.yaml"
 
       - name: Install dependencies
         # 本 job 只做网页构建 + 产物改写，不需要 electron 等 postinstall 重活。
@@ -636,14 +657,15 @@ jobs:
           echo "key 预发检查通过（连接建立后立即预发 key，规避服务器 2 秒 keyCheck 超时）"
 
       - name: Cache npm (for npx wrangler)
-        # `npx --yes wrangler@4` 每次都要把 wrangler 及其依赖树取一遍；
+        # `npx --yes wrangler@<version>` 每次都要把 wrangler 及其依赖树取一遍；
         # 缓存 npm 的包缓存后，重复部署时可复用已下载的 tarball。
+        # 键绑定精确 wrangler 版本：版本不变则缓存长期有效，升级版本时自动换新缓存。
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: npm-wrangler4-${{ runner.os }}-${{ hashFiles('package.json') }}
+          key: npm-wrangler-${{ runner.os }}-${{ env.WRANGLER_VERSION }}
           restore-keys: |
-            npm-wrangler4-${{ runner.os }}-
+            npm-wrangler-${{ runner.os }}-
 
       - name: Deploy to Cloudflare Pages
         # Direct Upload：产物来自上面的构建步骤，直传 Cloudflare 边缘网络。
@@ -652,9 +674,9 @@ jobs:
         #   生产部署，才会挂到自定义域 nngame.de5.net。CI 检出为 detached HEAD，
         #   必须显式指定分支名（不能省略）。若将来把项目 production_branch 改成
         #   feat/web-pages，此处须同步改，否则会退化为「预览部署」（不带自定义域）。
-        #   npx 锁大版本 4，避免上游 breaking change。
+        #   npx 锁精确版本（见文件顶部 env.WRANGLER_VERSION），避免上游 breaking change。
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-        run: npx --yes wrangler@4 pages deploy dist --project-name=noname --branch=main
+        run: npx --yes wrangler@${WRANGLER_VERSION} pages deploy dist --project-name=noname --branch=main

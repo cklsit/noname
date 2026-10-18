@@ -38,6 +38,17 @@ on:
 permissions:
   contents: write # 创建 Release 需要
 
+# 工具链版本集中定义，避免各步骤之间漂移。
+env:
+  NODE_VERSION: "24"
+  PNPM_VERSION: "10"
+
+# 同一 ref 的构建串行执行：iOS 构建占用昂贵的 macOS runner，
+# 不并发跑多份；也不中途取消（取消会白白浪费已消耗的构建时间）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-ipa:
     name: Build unsigned IPA
@@ -66,6 +77,8 @@ jobs:
           fetch-depth: 1
           lfs: false
           submodules: false
+          # 本工作流通过 gh（GH_TOKEN）上传 Release，不用 git 推送。
+          persist-credentials: false
 
       - name: Disk after checkout
         run: df -h /
@@ -73,14 +86,17 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v5
         with:
-          version: 10
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: "pnpm"
+          # sharedWorkspaceLockfile: false → 仓库有多份 lockfile；只盯根 lockfile
+          # 会在子包依赖变化时假命中缓存。
+          cache-dependency-path: "**/pnpm-lock.yaml"
 
       - name: Install dependencies
         # --ignore-scripts 跳过 electron 等无关平台重活，加快安装
@@ -157,7 +173,7 @@ jobs:
         # Capacitor 6 用 CocoaPods 管理 iOS 依赖，因此显式指定 packagemanager。
         env:
           CI: "true"
-        run: npx cap add ios --packagemanager CocoaPods
+        run: pnpm exec cap add ios --packagemanager CocoaPods
 
       - name: Capacitor sync (builds preload.js)
         working-directory: apps/mobile
@@ -295,13 +311,28 @@ jobs:
           echo "ipa_path=$BUILD_DIR/$IPA_NAME.ipa" >> "$GITHUB_OUTPUT"
           echo "ipa_name=$IPA_NAME" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve artifact retention
+        id: retention
+        # 手动触发时校验并夹取到 GitHub 允许的 1-90 天；tag 触发时 inputs 为空，回退 14 天。
+        # 放在独立步骤里，避免 upload-artifact 的参数表达式在空输入下解析失败。
+        env:
+          REQUESTED_DAYS: ${{ inputs.retention_days }}
+        run: |
+          DAYS="${REQUESTED_DAYS:-14}"
+          case "$DAYS" in
+            ''|*[!0-9]*) DAYS=14 ;;
+          esac
+          if [ "$DAYS" -lt 1 ]; then DAYS=1; fi
+          if [ "$DAYS" -gt 90 ]; then DAYS=90; fi
+          echo "days=$DAYS" >> "$GITHUB_OUTPUT"
+          echo "Artifact 保留天数：$DAYS"
+
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: noname-ios-unsigned
           path: ${{ steps.package.outputs.ipa_path }}
-          # workflow_dispatch 时用用户填的天数；tag 触发时 inputs 为空，回退到 14 天
-          retention-days: ${{ github.event_name == 'workflow_dispatch' && fromJSON(inputs.retention_days) || 14 }}
+          retention-days: ${{ steps.retention.outputs.days }}
           if-no-files-found: error
 
       - name: Publish to Release

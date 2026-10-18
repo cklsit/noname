@@ -3,7 +3,8 @@ name: Sync with upstream
 # 用途：让本 Fork 与上游 libnoname/noname 保持同步，不用手动点「Sync fork」。
 #
 # 覆盖分支：每晚自动枚举本 Fork 的全部现有分支（每分支一个独立任务），
-#     排除 build-output（构建产物分支，由 build.yml 强推维护）与 backup/*（备份分支，保持快照、不参与同步）。
+#     排除 build-output（构建产物分支，由 build.yml 强推维护）与 backup/*（备份分支，
+#     保持快照、不参与同步）。
 #     新增分支无需改本文件——创建后会自动纳入下一次同步。
 # 同步源：与本工作流所用的 merge-upstream 接口（即网页「Sync fork」按钮）的实际语义对齐——
 #     上游存在同名分支时，同步「上游的同名分支」；否则回退「上游 main」。
@@ -76,7 +77,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # merge-upstream 需要写权限
+  contents: read # 枚举分支只需读权限；写权限下放到 sync 任务
 
 jobs:
   # 前置：运行时枚举本 Fork 的全部现有分支（排除 build-output 与 backup/*），供同步矩阵使用。
@@ -102,8 +103,8 @@ jobs:
             echo "::error::未枚举到任何可同步分支（异常，请检查）"
             exit 1
           fi
-          # 生成 JSON 数组供 matrix.fromJSON 使用（分支名不含引号/反斜杠，直接包裹即可）
-          json="[$(printf '%s\n' "$names" | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')]"
+          # 用 jq 构造 JSON 数组：分支名可能含引号等字符，手工拼字符串会生成非法 JSON。
+          json=$(printf '%s\n' "$names" | jq -R . | jq -s -c .)
           echo "branches=$json" >> "$GITHUB_OUTPUT"
           count=$(printf '%s\n' "$names" | grep -c .)
           echo "count=$count" >> "$GITHUB_OUTPUT"
@@ -115,6 +116,8 @@ jobs:
     needs: list-branches
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write # merge-upstream 需要写权限
 
     # 每个分支一个独立任务，互不影响（fail-fast=false 让单个分支失败不牵连其它）
     strategy:
