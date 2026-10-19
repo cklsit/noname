@@ -165,7 +165,7 @@ jobs:
         # 本 job 只做网页构建 + 产物改写，不需要 electron 等 postinstall 重活。
         run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
 
-      - name: Inject relay rewrite & key preflight (source level)
+      - name: Inject relay rewrite & key preflight
         # v8（2026-10-17）：注入从「产物侧打补丁」前移到「构建前改源码」。
         #   为什么：上游 d1ef29aa3 起对本体启用 esbuild 压缩，dist 内标识符全部重命名，
         #   源码级字面锚点（const url = tempUrl.href; / game.ws = new WebSocket(url);）
@@ -256,7 +256,7 @@ jobs:
           NONAME_BUILD_COMMIT: ${{ github.sha }}
         run: pnpm build
 
-      - name: Vendor rename (bypass wrangler's node_modules exclusion)
+      - name: Vendor rename
         # 为什么需要这一步（2026-10-11 首次部署实测）：
         #   wrangler 对 Pages 上传有硬编码忽略清单（含 "**/node_modules"，不可配置）→
         #   dist/node_modules 的模块文件（vue / pinyin-pro / dedent / crypto-js…）不会被上传，
@@ -542,7 +542,7 @@ jobs:
           console.log(root + ' asset-manifest.json: ' + entries.length + ' entries');
           "
 
-      - name: Write platform files (_headers, 404.html & relay)
+      - name: Write platform files
         # 为什么需要这两个文件：
         #   ① _headers：上游注册 SW 时带 updateViaCache:"all"（src 见 index.html），浏览器
         #      检查 SW 更新时会使用 HTTP 缓存 → 对 service-worker.js 与 asset-manifest.json
@@ -590,7 +590,7 @@ jobs:
           echo "===== dist/404.html（前 3 行）====="
           head -3 dist/404.html
 
-      - name: Verify Cloudflare Pages limits (file count & sizes)
+      - name: Verify Cloudflare Pages limits
         # Cloudflare Pages 免费版硬限制：20,000 文件 / 25 MiB 单文件。
         # 提前断言拦截，避免上传到一半才失败、排查时误怪到 wrangler 头上。
         run: |
@@ -656,7 +656,7 @@ jobs:
           fi
           echo "key 预发检查通过（连接建立后立即预发 key，规避服务器 2 秒 keyCheck 超时）"
 
-      - name: Cache npm (for npx wrangler)
+      - name: Cache npm
         # `npx --yes wrangler@<version>` 每次都要把 wrangler 及其依赖树取一遍；
         # 缓存 npm 的包缓存后，重复部署时可复用已下载的 tarball。
         # 键绑定精确 wrangler 版本：版本不变则缓存长期有效，升级版本时自动换新缓存。
