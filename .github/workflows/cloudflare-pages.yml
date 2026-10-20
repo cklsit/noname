@@ -1,14 +1,14 @@
 name: Deploy Web to Cloudflare Pages
 
 # 用途：把《无名杀》网页版（apps/core 的 Vite 产物 dist/）发布到 Cloudflare Pages
-#       主站：https://nngame.de5.net/（自定义域，2026-10-13 绑定）
+#       主站：https://nngame.de5.net/（自定义域）
 #       备用：https://noname-cje.pages.dev/（项目名 noname）
 #
 # 所在分支：feat/web-pages（网页版主分支）；main 上另存一份同名副本
-#   （2026-10-17 恢复，用于 Actions 页手动触发——手动触发要求文件在默认分支）。
+#   （用于 Actions 页手动触发——手动触发要求文件在默认分支）。
 #   两份必须保持同内容、同 blob（本文件在仓库中以 CRLF 存储）。
 #
-# 为什么从 GitHub Pages 迁移到 Cloudflare Pages（2026-10-11）：
+# 为什么从 GitHub Pages 迁移到 Cloudflare Pages：
 #   ① GitHub Pages 单站点硬上限 1 GB → 被迫裁掉全部武将语音（audio/skill 470 MiB +
 #      audio/die 111 MiB，共 9274 个文件）。Cloudflare Pages 无总大小限制
 #      （仅 20,000 文件/25 MiB 单文件），完整 dist（1.3 GiB / 15593 文件）可全量部署，
@@ -20,7 +20,7 @@ name: Deploy Web to Cloudflare Pages
 # 部署方式：Direct Upload（构建在 GitHub Actions，产物直传 Cloudflare）
 #   - 不做 Cloudflare 侧的 Git 集成构建：本仓库的产物需要多步后处理（见下方改写步骤），
 #     且直传部署不计入 Cloudflare 的 500 次/月构建配额；
-#   - Pages 项目已创建（2026-10-11：noname，production_branch=main）；如需重建：
+#   - Pages 项目已创建（noname，production_branch=main）；如需重建：
 #       npx wrangler pages project create noname --production-branch=main
 #     ⚠️ production_branch 保持 main（与下方 --branch=main 配套）；本工作流传在
 #        feat/web-pages 分支上运行，但部署仍标记为生产部署，自定义域不受影响。
@@ -33,7 +33,7 @@ name: Deploy Web to Cloudflare Pages
 #   - 单文件 ≤ 25 MiB（当前全部 < 20 MiB）
 #   - 单次部署总量无硬限制；静态请求/带宽无限
 #
-# ✅ 可玩性方案（2026-10-11，本地+线上实测）：上游 web 版在启动时要求同源 fs 后端
+# ✅ 可玩性方案（本地+线上实测）：上游 web 版在启动时要求同源 fs 后端
 #   （@noname/server / noname-server 提供的 /checkFile、/readFile、/getFileList、/writeFile 等接口，
 #   见 apps/core/noname/init/browser.js）。纯静态托管没有后端，直接跑会停在「加载内容失败」。
 #   本工作流通过两件事让纯静态可玩：
@@ -45,7 +45,7 @@ name: Deploy Web to Cloudflare Pages
 #        "./" 或 "../../" 相对形式，两种部署布局下解析结果都正确（已在 GitHub Pages 全量验证），
 #        因此本工作流与旧 pages.yml 共用同一套产物后处理逻辑。
 #
-# ⚠️ 三个平台特性与对策（2026-10-11 部署实测，v2–v4 修正）：
+# ⚠️ 三个平台特性与对策（部署实测，v2–v4 修正）：
 #   ① wrangler 上传有硬编码忽略清单（含 "**/node_modules"，不可配置）→ dist/node_modules
 #      里的模块文件（vue / pinyin-pro / dedent / crypto-js…，共 120 个）不会被上传，
 #      importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。对策：部署前把 node_modules
@@ -56,7 +56,7 @@ name: Deploy Web to Cloudflare Pages
 #   ③ CF Pages 在没有顶层 404.html 时会按 SPA 处理：任何未匹配路径都回退 index.html
 #      并返回 200 —— 这会破坏「文件存在性」语义：SW fs shim 的 HEAD 兜底与游戏的
 #      checkFile 探测（如 noname.config.txt「懒人包配置」）都会把"不存在"误判为"存在"，
-#      进而把 index.html 内容当作文件数据读取（atob 解码崩溃、启动流程错乱，2026-10-11 实测）。
+#      进而把 index.html 内容当作文件数据读取（atob 解码崩溃、启动流程错乱，实测）。
 #      对策：写入顶层 404.html（平台自此对未匹配路径返回 404，与本地/GitHub Pages 一致）。
 #
 # ⚡ 联机中继（2026-10 更新）：浏览器禁止 https 页面直连 ws://（混合内容拦截），
@@ -78,7 +78,7 @@ name: Deploy Web to Cloudflare Pages
 #      （CF 隧道 RTT 高、吞吐低）下 key 会 >2 秒才到，被服务器判 denied("key")，客户端误显示
 #      为「游戏版本过低」。产物侧在 ws onopen 时立即预发一次 key 规避该超时（随后 roomlist
 #      到达会按原逻辑再发一次，无副作用）。
-#   ⭐ 注入前移（v8，2026-10-17）：注入前移至源码级（适配上游产物压缩；产物侧仅校验）。
+#   ⭐ 注入前移（v8）：注入前移至源码级（适配上游产物压缩；产物侧仅校验）。
 #
 # 触发方式：
 #   ① 自动部署：推送到 feat/web-pages 即触发（含每日上游同步产生的合并提交）；
@@ -166,7 +166,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
 
       - name: Inject relay rewrite & key preflight
-        # v8（2026-10-17）：注入从「产物侧打补丁」前移到「构建前改源码」。
+        # v8：注入从「产物侧打补丁」前移到「构建前改源码」。
         #   为什么：上游 d1ef29aa3 起对本体启用 esbuild 压缩，dist 内标识符全部重命名，
         #   源码级字面锚点（const url = tempUrl.href; / game.ws = new WebSocket(url);）
         #   在压缩产物上 0 命中 → 产物侧打补丁失效。
@@ -257,7 +257,7 @@ jobs:
         run: pnpm build
 
       - name: Vendor rename
-        # 为什么需要这一步（2026-10-11 首次部署实测）：
+        # 为什么需要这一步（首次部署实测）：
         #   wrangler 对 Pages 上传有硬编码忽略清单（含 "**/node_modules"，不可配置）→
         #   dist/node_modules 的模块文件（vue / pinyin-pro / dedent / crypto-js…）不会被上传，
         #   importmap 与 <script> 指向的模块全部 404（游戏启动即挂）。
@@ -265,7 +265,7 @@ jobs:
         #   ⚠️ 关键：pnpm 结构里包目录内含二级 node_modules（形如
         #   .pnpm/<pkg>@<ver>/node_modules/<pkg>/…），引用里出现的这些"内层 node_modules 段"
         #   必须与文件系统保持一致 —— 因此内层同名目录也一并改名为 vendor
-        #   （只做字符串替换而不改目录会导致引用失配，2026-10-11 本地实测出现过）。
+        #   （只做字符串替换而不改目录会导致引用失配，本地实测出现过）。
         #   断言：① 全 dist 文本文件无 "node_modules/" 残留；
         #         ② index.html 的 importmap 与 src/href 引用必须命中真实文件（存在性校验，
         #            防"替换过度/不足"这类静态失配）。
@@ -516,7 +516,7 @@ jobs:
           NODE
 
       - name: Generate asset-manifest.json
-        # 为什么需要这一步（2026-10-11 首次部署实测）：
+        # 为什么需要这一步（首次部署实测）：
         #   asset-manifest.json 不是 pnpm build 的产物（源码树中无生成者）——它是
         #   「静态部署侧」产物：运行时 SW fs shim 读取它作为目录索引（getFileList 的数据源，
         #   模拟列目录）。GitHub Pages 版之所以有它，是因为旧工作流的「裁减后重建」步骤
