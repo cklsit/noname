@@ -10,9 +10,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  eslint:
-    name: ESLint Check
+  lint:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ESLint Check
+            script: lint
+          - name: Prettier Check
+            script: lint:prettier
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -53,5 +61,5 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
 
-      - name: Run ESLint
-        run: pnpm --filter "...[${{ github.base_ref }}]" --filter "!./" lint
+      - name: Run ${{ matrix.name }}
+        run: pnpm --filter "...[${{ github.base_ref }}]" --filter "!./" run --if-present ${{ matrix.script }}
