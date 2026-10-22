@@ -7,17 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       deploy_to_ipad:
-        description: Deploy the built IPA to a laptop-hosted iPad runner
+        description: Deploy the built IPA through the LAN iPad runner
         type: boolean
         required: false
         default: false
       ipad_device_id:
-        description: Optional devicectl identifier for the target iPad
+        description: Optional pairing UDID for the target iPad
         type: string
         required: false
         default: ""
       ipad_host:
-        description: Optional LAN host; Bonjour discovery is used when empty
+        description: Optional SideStore endpoint host; Bonjour discovery is used when empty
         type: string
         required: false
         default: ""
@@ -146,9 +146,14 @@ jobs:
   deploy-ios:
     name: Deploy unsigned IPA through built-in SideStore
     needs: build-ios
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy_to_ipad
-    runs-on: [self-hosted, macOS, noname-ios-deploy]
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.deploy_to_ipad) ||
+      (github.event_name == 'push' && vars.NONAME_AUTO_DEPLOY == 'true')
+    runs-on: [self-hosted, Linux, noname-ios-deploy]
     timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
 
     steps:
       - name: Download built IPA
@@ -166,8 +171,23 @@ jobs:
           echo "IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
 
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@7275e9cf18e699bf8cf46c55506a6b61fa52d626
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@d39dcd33851e59fb1566af10b96050f3f2b30ff7
         with:
           ipa-path: ${{ env.IPA_PATH }}
-          device-id: ${{ inputs.ipad_device_id }}
-          host: ${{ inputs.ipad_host }}
+          device-id: ${{ inputs.ipad_device_id || secrets.NONAME_IOS_DEVICE_ID }}
+          host: ${{ inputs.ipad_host || secrets.NONAME_IOS_HOST }}
+
+      - name: Delete successful deployment artifact
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_id="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+              --jq '.artifacts[] | select(.name == "noname-ios-unsigned" and .expired == false) | .id'
+          )"
+          if [[ -n "$artifact_id" ]]; then
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+          fi
