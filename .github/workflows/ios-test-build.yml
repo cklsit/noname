@@ -171,7 +171,7 @@ jobs:
           echo "IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
 
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@d39dcd33851e59fb1566af10b96050f3f2b30ff7
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@58a60a060c0fafabd07b63a0af9153d0226a807d
         with:
           ipa-path: ${{ env.IPA_PATH }}
           device-id: ${{ inputs.ipad_device_id || secrets.NONAME_IOS_DEVICE_ID }}
