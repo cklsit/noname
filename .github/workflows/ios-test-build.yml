@@ -5,6 +5,22 @@ on:
     branches:
       - feat/ios-integration
   workflow_dispatch:
+    inputs:
+      deploy_to_ipad:
+        description: Deploy the built IPA to a laptop-hosted iPad runner
+        type: boolean
+        required: false
+        default: false
+      ipad_device_id:
+        description: Optional devicectl identifier for the target iPad
+        type: string
+        required: false
+        default: ""
+      ipad_host:
+        description: Optional LAN host; Bonjour discovery is used when empty
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -126,3 +142,32 @@ jobs:
             ${{ steps.package.outputs.ipa_path }}.sha256
           retention-days: 14
           if-no-files-found: error
+
+  deploy-ios:
+    name: Deploy unsigned IPA through built-in SideStore
+    needs: build-ios
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_to_ipad
+    runs-on: [self-hosted, macOS, noname-ios-deploy]
+    timeout-minutes: 30
+
+    steps:
+      - name: Download built IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: noname-ios-unsigned
+          path: deploy
+
+      - name: Resolve IPA path
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa_path="$(find deploy -type f -name '*.ipa' | head -n 1)"
+          test -n "$ipa_path"
+          echo "IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
+
+      - name: Deploy through LiveContainer built-in SideStore
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@7275e9cf18e699bf8cf46c55506a6b61fa52d626
+        with:
+          ipa-path: ${{ env.IPA_PATH }}
+          device-id: ${{ inputs.ipad_device_id }}
+          host: ${{ inputs.ipad_host }}
