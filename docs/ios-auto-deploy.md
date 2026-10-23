@@ -3,8 +3,8 @@
 The `ios-test-build.yml` workflow can optionally hand its unsigned IPA to a
 self-hosted Linux runner on the same LAN as the target iPad. The runner invokes
 the modified built-in SideStore from LiveContainer through `pymobiledevice3`,
-verifies SHA-256, uninstalls `com.libnoname.noname`, installs the new IPA, and
-cleans up the runner copy and successful build artifact.
+opens LocalDevVPN, verifies SHA-256, uninstalls `com.libnoname.noname`, installs
+the new IPA, and cleans up the runner copy and successful build artifact.
 
 ## One-time prerequisites
 
@@ -44,6 +44,9 @@ Optional inputs:
 ## Safety properties
 
 - The deployment service is disabled until configured with a per-run secret.
+- LocalDevVPN is launched automatically before SideStore is relaunched.
+- The modified `auto=1` install path bypasses the URL-import confirmation and
+  starts SideStore's installation pipeline directly.
 - Requests use HMAC-SHA256, a short timestamp window, and a one-time nonce.
 - Only the exact bundle ID `com.libnoname.noname` is accepted.
 - The iPad verifies the IPA SHA-256 before uninstalling the existing app.
