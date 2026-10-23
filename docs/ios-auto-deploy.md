@@ -46,6 +46,8 @@ Optional inputs:
 - The deployment service is disabled until configured with a per-run secret.
 - LocalDevVPN is launched automatically before SideStore is relaunched.
 - A temporary power assertion keeps the iPad awake during the deployment window.
+- The runner renews the power assertion in the background while exactly one
+  paired iPad is visible, preventing normal idle sleep from taking it offline.
 - The modified `auto=1` install path bypasses the URL-import confirmation and
   starts SideStore's installation pipeline directly.
 - Requests use HMAC-SHA256, a short timestamp window, and a one-time nonce.
@@ -65,6 +67,10 @@ Deployment stops rather than guessing when:
 - the iPad cannot resolve or reach the temporary LAN IPA server;
 - SHA-256 verification fails;
 - SideStore reports an uninstall or install error.
+
+A powered-off iPad, disabled Wi-Fi, or a passcode-locked screen cannot be
+bypassed from the runner. The keep-awake process prevents normal idle sleep but
+cannot wake a device that has already dropped off the network.
 
 Never run this job on an untrusted self-hosted runner because it can access
 paired devices and the local network.
