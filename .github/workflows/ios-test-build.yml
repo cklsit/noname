@@ -171,12 +171,52 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          ARTIFACT_REPOSITORY: ${{ github.repository }}
+          ARTIFACT_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          artifact_id="$(
-            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
-              --jq '.artifacts[] | select(.name == "noname-ios-unsigned" and .expired == false) | .id'
-          )"
-          if [[ -n "$artifact_id" ]]; then
-            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
-          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          api_root = "https://api.github.com"
+          repository = os.environ["ARTIFACT_REPOSITORY"]
+          run_id = os.environ["ARTIFACT_RUN_ID"]
+          token = os.environ["GH_TOKEN"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "User-Agent": "noname-ios-artifact-cleanup",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def request(path: str, method: str = "GET"):
+              req = urllib.request.Request(api_root + path, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  return json.load(response) if method == "GET" else None
+
+          artifacts = []
+          page = 1
+          while True:
+              payload = request(
+                  f"/repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100&page={page}"
+              )
+              batch = payload.get("artifacts", [])
+              artifacts.extend(batch)
+              if len(batch) < 100:
+                  break
+              page += 1
+
+          matches = [
+              artifact
+              for artifact in artifacts
+              if artifact.get("name") == "noname-ios-unsigned"
+              and not artifact.get("expired")
+          ]
+          for artifact in matches:
+              request(f"/repos/{repository}/actions/artifacts/{artifact['id']}", "DELETE")
+              print(f"Deleted artifact {artifact['id']}")
+          if not matches:
+              print("Deployment artifact was already absent")
+          PY
