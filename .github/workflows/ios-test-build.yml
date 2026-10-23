@@ -154,26 +154,15 @@ jobs:
     permissions:
       actions: write
       contents: read
+    env:
+      HTTP_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+      HTTPS_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
 
     steps:
-      - name: Download built IPA
-        uses: actions/download-artifact@v4
-        with:
-          name: noname-ios-unsigned
-          path: deploy
-
-      - name: Resolve IPA path
-        shell: bash
-        run: |
-          set -euo pipefail
-          ipa_path="$(find deploy -type f -name '*.ipa' | head -n 1)"
-          test -n "$ipa_path"
-          echo "IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
-
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@e0e3fdd41333160745bbe3571625094235af3d83
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@d7035ad6ac06e4495a41fadda3fb433f049c3bca
         with:
-          ipa-path: ${{ env.IPA_PATH }}
+          artifact-run-id: ${{ github.run_id }}
           device-id: ${{ inputs.ipad_device_id || secrets.NONAME_IOS_DEVICE_ID }}
           host: ${{ inputs.ipad_host || secrets.NONAME_IOS_HOST }}
 
