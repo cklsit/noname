@@ -45,6 +45,7 @@ Optional inputs:
 
 - The deployment service is disabled until configured with a per-run secret.
 - LocalDevVPN is launched automatically before SideStore is relaunched.
+- A temporary power assertion keeps the iPad awake during the deployment window.
 - The modified `auto=1` install path bypasses the URL-import confirmation and
   starts SideStore's installation pipeline directly.
 - Requests use HMAC-SHA256, a short timestamp window, and a one-time nonce.
