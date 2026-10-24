@@ -45,7 +45,11 @@ jobs:
             exit 1
           fi
 
-          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${branch_encoded}" --jq .sha)"
+          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BRANCH}" --jq '.object.sha')"
+          if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve the head of ${BRANCH}"
+            exit 1
+          fi
           echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
           {
             echo "## Nightly source"
@@ -61,6 +65,7 @@ jobs:
     runs-on: macos-26
     outputs:
       artifact_name: ${{ steps.package.outputs.ipa_name }}
+      ipa_version: ${{ steps.package.outputs.ipa_version }}
     timeout-minutes: 90
     env:
       NONAME_BUILD_CHANNEL: nightly
@@ -140,6 +145,7 @@ jobs:
             GCC_GENERATE_DEBUGGING_SYMBOLS=NO \
             COPY_PHASE_STRIP=YES \
             STRIP_INSTALLED_PRODUCT=YES \
+            CURRENT_PROJECT_VERSION="$(date -u +%Y%m%d%H%M%S)" \
             -quiet \
             build
 
@@ -152,6 +158,12 @@ jobs:
           rm -rf "$BUILD_DIR"
           mkdir -p "$BUILD_DIR/Payload"
           cp -r "$APP_PATH" "$BUILD_DIR/Payload/"
+          IPA_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")"
+          if [[ ! "$IPA_VERSION" =~ ^[0-9]{14}$ ]]; then
+            echo "::error::Unexpected CFBundleVersion '${IPA_VERSION}'; nightly builds need a unique build number"
+            exit 1
+          fi
+          echo "ipa_version=${IPA_VERSION}" >> "$GITHUB_OUTPUT"
           find "$BUILD_DIR/Payload" -name "._*" -delete || true
           cd "$BUILD_DIR"
           zip -qry "$IPA_NAME.ipa" Payload -x '*.DS_Store' -x '*/._*'
@@ -192,8 +204,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.verify-sync.outputs.source_sha }}
           ARTIFACT_NAME: ${{ needs.build-ios.outputs.artifact_name }}
+          IPA_VERSION: ${{ needs.build-ios.outputs.ipa_version }}
+          BRANCH: feat/ios-integration
         run: |
           set -euo pipefail
+          if [[ -z "${SOURCE_SHA:-}" ]]; then
+            SOURCE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BRANCH:-feat/ios-integration}" --jq '.object.sha')"
+          fi
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::source SHA is unavailable"; exit 1; }
           ipa_path="$(find nightly -maxdepth 2 -type f -name '*.ipa' -print -quit)"
           sha_path="${ipa_path}.sha256"
           [[ -n "$ipa_path" && -f "$ipa_path" && -f "$sha_path" ]]
@@ -205,6 +223,7 @@ jobs:
             echo "Automated iOS nightly build from \`${SOURCE_SHA}\`."
             echo
             echo "- Build time: $(TZ=Asia/Shanghai date "+%Y-%m-%dT%H:%M:%S%z")"
+            echo "- Build version: \`${IPA_VERSION}\`"
             echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo "- Download: \`${ipa_file}\`"
             echo "- Integrity: verify with \`${sha_file}\`"
@@ -257,7 +276,7 @@ jobs:
       - verify-sync
     if: success()
     runs-on: [self-hosted, Linux, noname-ios-deploy]
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       actions: write
       contents: read
@@ -265,9 +284,13 @@ jobs:
       HTTP_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
       HTTPS_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
       NONAME_IOS_PASSCODE: ${{ secrets.NONAME_IOS_PASSCODE }}
+      NONAME_LOCK_DURING_DEPLOY: "1"
+      NONAME_KEEP_AWAKE: "1"
+      NONAME_MAX_RECOVERIES: "2"
+      NONAME_ALIVE_TIMEOUT: "2"
     steps:
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@90c15758d6543c33a77bbd85f3586ecf196800d1
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@af1a9188d6c053029ccfa927f423d2dfcdc10cea
         with:
           artifact-run-id: ${{ github.run_id }}
           artifact-name: ${{ needs.build-ios.outputs.artifact_name }}
@@ -281,7 +304,11 @@ jobs:
           {
             echo "## iPad deployment completed"
             echo ""
-            echo "The installer unlocked the passcode-protected device, started a silent-audio background task, locked the display, and completed installation."
+            echo "Flow: the installer unlocked the passcode-protected device, started the silent-audio background task, and locked the display once the job reached the install stage."
+            echo ""
+            echo "While the screen is off the runner probes \`GET /v1/hello\` every two seconds. If the endpoint stops answering (iOS suspended the host), or the job reports \`failed\` while the display is locked (installd refused the install), the runner wakes the iPad, unlocks it with the configured passcode, relaunches the host with a fresh token, and resumes the deployment. At most \`NONAME_MAX_RECOVERIES\` (2) wake-and-retry cycles are allowed; an interrupted install is only redone when the installed build number differs from the IPA."
+            echo ""
+            echo "The device is locked again at the end of the run so it stays on its screen-off schedule."
             echo ""
             echo "The nightly installer fully removes the existing app and its container before reinstalling."
           } >> "$GITHUB_STEP_SUMMARY"
