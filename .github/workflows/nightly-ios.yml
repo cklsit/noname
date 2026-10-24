@@ -2,7 +2,8 @@ name: Nightly iOS release and LAN deployment
 
 on:
   schedule:
-    # UTC 17:00 = 01:00 Asia/Shanghai, one hour after Sync with upstream.
+    # UTC 17:00 = 01:00 Asia/Shanghai. The build checks out the upstream branch
+    # directly, so a late or failed sync no longer blocks the nightly run.
     - cron: "0 17 * * *"
   workflow_dispatch:
 
@@ -15,7 +16,7 @@ concurrency:
 
 jobs:
   verify-sync:
-    name: Verify feat/ios-integration matches upstream
+    name: Resolve upstream feat/ios-integration
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -24,39 +25,28 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       BRANCH: feat/ios-integration
       UPSTREAM_OWNER: libnoname
+      UPSTREAM_REPO: noname
     steps:
-      - name: Verify branch has no upstream delta
+      - name: Resolve upstream head
         id: verify
         shell: bash
         run: |
           set -euo pipefail
-          branch_encoded="${BRANCH//\//%2F}"
-          compare_url="repos/${GITHUB_REPOSITORY}/compare/${branch_encoded}...${UPSTREAM_OWNER}:${branch_encoded}"
-          compare="$(gh api "$compare_url")"
-          ahead="$(jq -r '.ahead_by' <<<"$compare")"
-          behind="$(jq -r '.behind_by' <<<"$compare")"
-
-          if [[ "$ahead" != "0" ]]; then
-            echo "::error::${BRANCH} is still ${ahead} commits behind upstream. The 00:00 Sync with upstream run must complete first."
-            exit 1
-          fi
-          if [[ "$behind" != "0" ]]; then
-            echo "::error::${BRANCH} has ${behind} fork-only commits. Keep it identical to upstream and move fork behavior to default-branch workflows."
-            exit 1
-          fi
-
-          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BRANCH}" --jq '.object.sha')"
+          # Build exactly what upstream has right now. Resolving the SHA from
+          # libnoname/noname avoids depending on the 00:00 mirror job: upstream
+          # moves during the day, and a stale or diverged fork branch used to
+          # abort the whole nightly run.
+          source_sha="$(gh api "repos/${UPSTREAM_OWNER}/${UPSTREAM_REPO}/git/ref/heads/${BRANCH}" --jq '.object.sha')"
           if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Could not resolve the head of ${BRANCH}"
+            echo "::error::Could not resolve the head of ${UPSTREAM_OWNER}/${UPSTREAM_REPO}:${BRANCH}"
             exit 1
           fi
           echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
           {
             echo "## Nightly source"
             echo ""
-            echo "- Branch: \`${BRANCH}\`"
+            echo "- Upstream: \`${UPSTREAM_OWNER}/${UPSTREAM_REPO}:${BRANCH}\`"
             echo "- Commit: \`${source_sha}\`"
-            echo "- Upstream delta: 0"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build-ios:
@@ -72,10 +62,12 @@ jobs:
       NONAME_BUILD_COMMIT: ${{ needs.verify-sync.outputs.source_sha }}
 
     steps:
-      - name: Checkout synchronized source
+      - name: Checkout upstream source
         uses: actions/checkout@v6
         with:
+          repository: libnoname/noname
           ref: ${{ needs.verify-sync.outputs.source_sha }}
+          token: ${{ github.token }}
           fetch-depth: 1
           lfs: false
           submodules: false
@@ -206,15 +198,18 @@ jobs:
           # 没有 GH_REPO 时会直接报 "fatal: not a git repository"。
           GH_REPO: ${{ github.repository }}
           SOURCE_SHA: ${{ needs.verify-sync.outputs.source_sha }}
+          # 标签必须指向本仓库存在的提交；构建提交来自上游仓库，不一定在本仓库对象库里。
+          TAG_SHA: ${{ github.sha }}
           ARTIFACT_NAME: ${{ needs.build-ios.outputs.artifact_name }}
           IPA_VERSION: ${{ needs.build-ios.outputs.ipa_version }}
           BRANCH: feat/ios-integration
         run: |
           set -euo pipefail
           if [[ -z "${SOURCE_SHA:-}" ]]; then
-            SOURCE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BRANCH:-feat/ios-integration}" --jq '.object.sha')"
+            SOURCE_SHA="$(gh api "repos/libnoname/noname/git/ref/heads/${BRANCH:-feat/ios-integration}" --jq '.object.sha')"
           fi
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::source SHA is unavailable"; exit 1; }
+          [[ "$TAG_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::tag SHA is unavailable"; exit 1; }
           ipa_path="$(find nightly -maxdepth 2 -type f -name '*.ipa' -print -quit)"
           sha_path="${ipa_path}.sha256"
           [[ -n "$ipa_path" && -f "$ipa_path" && -f "$sha_path" ]]
@@ -236,7 +231,7 @@ jobs:
           has_tag=false
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" >/dev/null 2>&1; then
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
-              -f sha="$SOURCE_SHA" \
+              -f sha="$TAG_SHA" \
               -F force=true
             has_tag=true
           fi
@@ -254,7 +249,7 @@ jobs:
               --notes-file "$notes_file"
           else
             gh release create nightly \
-              --target "$SOURCE_SHA" \
+              --target "$TAG_SHA" \
               --title "Nightly Release" \
               --prerelease \
               --notes-file "$notes_file"
