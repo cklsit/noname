@@ -33,7 +33,7 @@ The resulting sequence is:
 2. build the unsigned slim IPA;
 3. update the `nightly` prerelease and replace its IPA assets;
 4. download the same build artifact on the LAN runner;
-5. wake the iPad and open `localdevvpn://enable`;
+5. wake the iPad and launch LocalDevVPN, respecting `Auto-connect on Launch`;
 6. verify the IPA hash, fully uninstall the old app, and let SideStore install
    the new build;
 7. delete the runner IPA and the successful GitHub Actions artifact.
@@ -54,7 +54,7 @@ For unattended push deployment, set repository variable
 ## Safety properties
 
 - Artifact names include the source commit short hash.
-- LocalDevVPN is opened through its URL scheme, not merely brought foreground.
+- `localdevvpn://enable` is used only as a fallback when no `utun` exists.
 - The runner retries transient RemotePairing failures and waits for the device.
 - A power assertion and keep-awake loop prevent normal idle sleep.
 - Requests use HMAC-SHA256, a short timestamp window, and a one-time nonce.
