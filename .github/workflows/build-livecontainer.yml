@@ -7,12 +7,12 @@ on:
         description: LiveContainer branch, tag, or commit
         type: string
         required: true
-        default: feat/noname-background-deploy
+        default: noname-deploy
       sidestore_ref:
         description: SideStore branch, tag, or commit
         type: string
         required: true
-        default: feat/noname-background-deploy
+        default: LiveContainerSupport
 
 permissions:
   contents: read

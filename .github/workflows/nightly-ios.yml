@@ -267,7 +267,7 @@ jobs:
       NONAME_IOS_PASSCODE: ${{ secrets.NONAME_IOS_PASSCODE }}
     steps:
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@f5279e8cc7e688d71b9b022461d1e38eef0e7fe2
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@90c15758d6543c33a77bbd85f3586ecf196800d1
         with:
           artifact-run-id: ${{ github.run_id }}
           artifact-name: ${{ needs.build-ios.outputs.artifact_name }}
