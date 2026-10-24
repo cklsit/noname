@@ -1,0 +1,299 @@
+name: Nightly iOS release and LAN deployment
+
+on:
+  schedule:
+    # UTC 17:00 = 01:00 Asia/Shanghai, one hour after Sync with upstream.
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-ios-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-sync:
+    name: Verify feat/ios-integration matches upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      source_sha: ${{ steps.verify.outputs.source_sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: feat/ios-integration
+      UPSTREAM_OWNER: libnoname
+    steps:
+      - name: Verify branch has no upstream delta
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_encoded="${BRANCH//\//%2F}"
+          compare_url="repos/${GITHUB_REPOSITORY}/compare/${branch_encoded}...${UPSTREAM_OWNER}:${branch_encoded}"
+          compare="$(gh api "$compare_url")"
+          ahead="$(jq -r '.ahead_by' <<<"$compare")"
+          behind="$(jq -r '.behind_by' <<<"$compare")"
+
+          if [[ "$ahead" != "0" ]]; then
+            echo "::error::${BRANCH} is still ${ahead} commits behind upstream. The 00:00 Sync with upstream run must complete first."
+            exit 1
+          fi
+          if [[ "$behind" != "0" ]]; then
+            echo "::error::${BRANCH} has ${behind} fork-only commits. Keep it identical to upstream and move fork behavior to default-branch workflows."
+            exit 1
+          fi
+
+          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${branch_encoded}" --jq .sha)"
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Nightly source"
+            echo ""
+            echo "- Branch: \`${BRANCH}\`"
+            echo "- Commit: \`${source_sha}\`"
+            echo "- Upstream delta: 0"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-ios:
+    name: Build unsigned iOS IPA
+    needs: verify-sync
+    runs-on: macos-26
+    outputs:
+      artifact_name: ${{ steps.package.outputs.ipa_name }}
+    timeout-minutes: 90
+    env:
+      NONAME_BUILD_CHANNEL: nightly
+      NONAME_BUILD_COMMIT: ${{ needs.verify-sync.outputs.source_sha }}
+
+    steps:
+      - name: Checkout synchronized source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-sync.outputs.source_sha }}
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
+
+      - name: Build noname
+        run: pnpm build
+
+      - name: Verify iOS Capacitor project
+        run: test -f apps/mobile/ios/App/App.xcodeproj/project.pbxproj
+
+      - name: Capacitor sync
+        working-directory: apps/mobile
+        run: pnpm sync:ios
+
+      - name: Strip character art and voice
+        working-directory: apps/mobile
+        run: pnpm exec tsx ios/strip-assets.ts
+
+      - name: Free disk
+        run: rm -rf dist
+
+      - name: Cache SPM packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ${{ runner.temp }}/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/ios/App/CapApp-SPM/Package.swift') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Build unsigned iOS app
+        working-directory: apps/mobile/ios/App
+        run: |
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64 \
+            EXCLUDED_ARCHS="i386 x86_64" \
+            DEBUG_INFORMATION_FORMAT=dwarf \
+            GCC_GENERATE_DEBUGGING_SYMBOLS=NO \
+            COPY_PHASE_STRIP=YES \
+            STRIP_INSTALLED_PRODUCT=YES \
+            -quiet \
+            build
+
+      - name: Package unsigned IPA
+        id: package
+        run: |
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/App.app"
+          IPA_NAME="noname-ios-nightly-${NONAME_BUILD_COMMIT:0:8}"
+          BUILD_DIR="$RUNNER_TEMP/ipa-build"
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR/Payload"
+          cp -r "$APP_PATH" "$BUILD_DIR/Payload/"
+          find "$BUILD_DIR/Payload" -name "._*" -delete || true
+          cd "$BUILD_DIR"
+          zip -qry "$IPA_NAME.ipa" Payload -x '*.DS_Store' -x '*/._*'
+          shasum -a 256 "$IPA_NAME.ipa" > "$IPA_NAME.ipa.sha256"
+          echo "ipa_path=$BUILD_DIR/$IPA_NAME.ipa" >> "$GITHUB_OUTPUT"
+          echo "ipa_name=$IPA_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.ipa_name }}
+          path: |
+            ${{ steps.package.outputs.ipa_path }}
+            ${{ steps.package.outputs.ipa_path }}.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+  publish-nightly:
+    name: Publish Nightly Release
+    needs: build-ios
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-ios.outputs.artifact_name }}
+          path: nightly
+
+      - name: Update tag, notes, and IPA assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.verify-sync.outputs.source_sha }}
+          ARTIFACT_NAME: ${{ needs.build-ios.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          ipa_path="$(find nightly -maxdepth 2 -type f -name '*.ipa' -print -quit)"
+          sha_path="${ipa_path}.sha256"
+          [[ -n "$ipa_path" && -f "$ipa_path" && -f "$sha_path" ]]
+          ipa_file="$(basename "$ipa_path")"
+          sha_file="${ipa_file}.sha256"
+
+          notes_file="$RUNNER_TEMP/nightly-notes.md"
+          {
+            echo "Automated iOS nightly build from \`${SOURCE_SHA}\`."
+            echo
+            echo "- Build time: $(TZ=Asia/Shanghai date "+%Y-%m-%dT%H:%M:%S%z")"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Download: \`${ipa_file}\`"
+            echo "- Integrity: verify with \`${sha_file}\`"
+            echo "- Deployment deletes the existing app container before reinstalling."
+          } > "$notes_file"
+
+          has_tag=false
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+              -f sha="$SOURCE_SHA" \
+              -F force=true
+            has_tag=true
+          fi
+
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly \
+              --title "Nightly Release" \
+              --prerelease \
+              --notes-file "$notes_file"
+          elif [[ "$has_tag" == "true" ]]; then
+            gh release create nightly \
+              --verify-tag \
+              --title "Nightly Release" \
+              --prerelease \
+              --notes-file "$notes_file"
+          else
+            gh release create nightly \
+              --target "$SOURCE_SHA" \
+              --title "Nightly Release" \
+              --prerelease \
+              --notes-file "$notes_file"
+          fi
+
+          gh release upload nightly "$ipa_path" "$sha_path" --clobber
+          while IFS= read -r asset; do
+            case "$asset" in
+              *.ipa|*.ipa.sha256)
+                if [[ "$asset" != "$ipa_file" && "$asset" != "$sha_file" ]]; then
+                  gh release delete-asset nightly "$asset" --yes
+                fi
+                ;;
+            esac
+          done < <(gh release view nightly --json assets --jq '.assets[].name')
+
+  deploy-ios:
+    name: Deploy Nightly IPA to iPad
+    needs:
+      - build-ios
+      - publish-nightly
+      - verify-sync
+    if: success()
+    runs-on: [self-hosted, Linux, noname-ios-deploy]
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    env:
+      HTTP_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+      HTTPS_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+    steps:
+      - name: Deploy through LiveContainer built-in SideStore
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@c601577c087d7ef28a808eee04c4cc5800b9f534
+        with:
+          artifact-run-id: ${{ github.run_id }}
+          artifact-name: ${{ needs.build-ios.outputs.artifact_name }}
+          device-id: ${{ secrets.NONAME_IOS_DEVICE_ID }}
+          host: ${{ secrets.NONAME_IOS_HOST }}
+
+      - name: Record data-reset warning
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## iPad deployment completed"
+            echo ""
+            echo "The nightly installer fully removes the existing app and its container before reinstalling."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete successful deployment artifact
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ needs.build-ios.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          artifact_id="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" |
+              jq -r --arg name "$ARTIFACT_NAME" \
+                '.artifacts[] | select(.name == $name and .expired == false) | .id'
+          )"
+          if [[ -n "$artifact_id" ]]; then
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+          fi
