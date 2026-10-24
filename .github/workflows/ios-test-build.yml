@@ -223,7 +223,7 @@ jobs:
 
     steps:
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@113a05823e64e3c2ce76629249a2d7f228b61786
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@b2fa1fefe4b8507083fc02b46bcd9a33f06ad7c5
         with:
           artifact-run-id: ${{ github.run_id }}
           artifact-name: ${{ needs.build-ios.outputs.artifact_name }}
