@@ -264,9 +264,10 @@ jobs:
     env:
       HTTP_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
       HTTPS_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+      NONAME_IOS_PASSCODE: ${{ secrets.NONAME_IOS_PASSCODE }}
     steps:
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@c601577c087d7ef28a808eee04c4cc5800b9f534
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@f5279e8cc7e688d71b9b022461d1e38eef0e7fe2
         with:
           artifact-run-id: ${{ github.run_id }}
           artifact-name: ${{ needs.build-ios.outputs.artifact_name }}
@@ -279,6 +280,8 @@ jobs:
         run: |
           {
             echo "## iPad deployment completed"
+            echo ""
+            echo "The installer unlocked the passcode-protected device, started a silent-audio background task, locked the display, and completed installation."
             echo ""
             echo "The nightly installer fully removes the existing app and its container before reinstalling."
           } >> "$GITHUB_STEP_SUMMARY"
