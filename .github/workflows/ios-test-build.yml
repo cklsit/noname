@@ -5,9 +5,30 @@ on:
     branches:
       - feat/ios-integration
   workflow_dispatch:
+    inputs:
+      publish_nightly:
+        description: Publish the built IPA to the Nightly Release
+        type: boolean
+        required: false
+        default: false
+      deploy_to_ipad:
+        description: Deploy the built IPA through the LAN iPad runner
+        type: boolean
+        required: false
+        default: false
+      ipad_device_id:
+        description: Optional pairing UDID for the target iPad
+        type: string
+        required: false
+        default: ""
+      ipad_host:
+        description: Optional SideStore endpoint host; Bonjour discovery is used when empty
+        type: string
+        required: false
+        default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ios-test-${{ github.ref }}
@@ -17,9 +38,11 @@ jobs:
   build-ios:
     name: Build unsigned iOS IPA (slim assets)
     runs-on: macos-26
+    outputs:
+      artifact_name: ${{ steps.package.outputs.ipa_name }}
     timeout-minutes: 90
     env:
-      NONAME_BUILD_CHANNEL: test
+      NONAME_BUILD_CHANNEL: ${{ inputs.publish_nightly && 'nightly' || 'test' }}
       NONAME_BUILD_COMMIT: ${{ github.sha }}
 
     steps:
@@ -127,3 +150,138 @@ jobs:
             ${{ steps.package.outputs.ipa_path }}.sha256
           retention-days: 14
           if-no-files-found: error
+
+      - name: Publish Nightly Release
+        if: inputs.publish_nightly
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IPA_PATH: ${{ steps.package.outputs.ipa_path }}
+          IPA_NAME: ${{ steps.package.outputs.ipa_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/nightly-release-notes.md"
+          build_time="$(TZ=Asia/Shanghai date "+%Y-%m-%dT%H:%M:%S%z")"
+          {
+            echo "Automated iOS nightly build from \`${SOURCE_SHA}\`."
+            echo
+            echo "- Build time: ${build_time}"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Download: \`${IPA_NAME}.ipa\`"
+            echo "- Integrity: verify with \`${IPA_NAME}.ipa.sha256\`"
+          } > "$notes_file"
+
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly \
+              --target "$SOURCE_SHA" \
+              --title "Nightly Release" \
+              --prerelease \
+              --notes-file "$notes_file"
+          else
+            gh release create nightly \
+              --target "$SOURCE_SHA" \
+              --title "Nightly Release" \
+              --prerelease \
+              --notes-file "$notes_file"
+          fi
+
+          gh release upload nightly \
+            "$IPA_PATH" \
+            "$IPA_PATH.sha256" \
+            --clobber
+
+          ipa_file="$(basename "$IPA_PATH")"
+          sha_file="${ipa_file}.sha256"
+          while IFS= read -r asset; do
+            case "$asset" in
+              *.ipa|*.ipa.sha256)
+                if [[ "$asset" != "$ipa_file" && "$asset" != "$sha_file" ]]; then
+                  gh release delete-asset nightly "$asset" --yes
+                fi
+                ;;
+            esac
+          done < <(gh release view nightly --json assets --jq '.assets[].name')
+
+  deploy-ios:
+    name: Deploy unsigned IPA through built-in SideStore
+    needs: build-ios
+    if: >-
+      needs.build-ios.result == 'success' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.deploy_to_ipad) ||
+        (github.event_name == 'push' && vars.NONAME_AUTO_DEPLOY == 'true')
+      )
+    runs-on: [self-hosted, Linux, noname-ios-deploy]
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    env:
+      HTTP_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+      HTTPS_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+
+    steps:
+      - name: Deploy through LiveContainer built-in SideStore
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@5c1d0076214631310be229c3150cf5c1ccd23907
+        with:
+          artifact-run-id: ${{ github.run_id }}
+          artifact-name: ${{ needs.build-ios.outputs.artifact_name }}
+          device-id: ${{ inputs.ipad_device_id || secrets.NONAME_IOS_DEVICE_ID }}
+          host: ${{ inputs.ipad_host || secrets.NONAME_IOS_HOST }}
+
+      - name: Delete successful deployment artifact
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_REPOSITORY: ${{ github.repository }}
+          ARTIFACT_RUN_ID: ${{ github.run_id }}
+          ARTIFACT_NAME: ${{ needs.build-ios.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          api_root = "https://api.github.com"
+          repository = os.environ["ARTIFACT_REPOSITORY"]
+          run_id = os.environ["ARTIFACT_RUN_ID"]
+          artifact_name = os.environ["ARTIFACT_NAME"]
+          token = os.environ["GH_TOKEN"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "User-Agent": "noname-ios-artifact-cleanup",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def request(path: str, method: str = "GET"):
+              req = urllib.request.Request(api_root + path, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  return json.load(response) if method == "GET" else None
+
+          artifacts = []
+          page = 1
+          while True:
+              payload = request(
+                  f"/repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100&page={page}"
+              )
+              batch = payload.get("artifacts", [])
+              artifacts.extend(batch)
+              if len(batch) < 100:
+                  break
+              page += 1
+
+          matches = [
+              artifact
+              for artifact in artifacts
+              if artifact.get("name") == artifact_name and not artifact.get("expired")
+          ]
+          for artifact in matches:
+              request(f"/repos/{repository}/actions/artifacts/{artifact['id']}", "DELETE")
+              print(f"Deleted artifact {artifact['id']}")
+          if not matches:
+              print("Deployment artifact was already absent")
+          PY
