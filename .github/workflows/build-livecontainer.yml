@@ -1,0 +1,87 @@
+name: Build modified LiveContainer and SideStore
+
+on:
+  workflow_dispatch:
+    inputs:
+      livecontainer_ref:
+        description: LiveContainer branch, tag, or commit
+        type: string
+        required: true
+        default: feat/noname-background-deploy
+      sidestore_ref:
+        description: SideStore branch, tag, or commit
+        type: string
+        required: true
+        default: feat/noname-background-deploy
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-livecontainer-${{ inputs.livecontainer_ref }}-${{ inputs.sidestore_ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build LiveContainer+SideStore IPA
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      SCHEME: LiveContainer
+      ARCHIVE_PATH: archive
+      SIDESTORE_IPA_PATH: ${{ github.workspace }}/side-store/SideStore.ipa
+    steps:
+      - name: Checkout LiveContainer
+        uses: actions/checkout@v6
+        with:
+          repository: cklsit/LiveContainer
+          ref: ${{ inputs.livecontainer_ref }}
+          submodules: recursive
+
+      - name: Checkout SideStore
+        uses: actions/checkout@v6
+        with:
+          repository: cklsit/SideStore
+          ref: ${{ inputs.sidestore_ref }}
+          path: side-store
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.2"
+
+      - name: Test deployment runner
+        run: python3 -m unittest scripts/noname-deploy/test_deploy.py
+
+      - name: Archive LiveContainer
+        run: |
+          xcodebuild archive \
+            -archivePath "$ARCHIVE_PATH" \
+            -scheme "$SCHEME" \
+            -project LiveContainer.xcodeproj \
+            -sdk iphoneos \
+            -arch arm64 \
+            -configuration Release
+
+      - name: Build SideStore source
+        working-directory: side-store
+        run: |
+          brew install ldid xcbeautify
+          python3 scripts/ci/workflow.py build
+
+      - name: Create LiveContainer+SideStore IPA
+        env:
+          SIDESTORE_IPA_PATH: ${{ env.SIDESTORE_IPA_PATH }}
+          archive_path: ${{ env.ARCHIVE_PATH }}
+          scheme: ${{ env.SCHEME }}
+        run: sh .github/build_github.sh
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveContainer+SideStore
+          path: LiveContainer+SideStore.ipa
+          retention-days: 14
+          if-no-files-found: error
