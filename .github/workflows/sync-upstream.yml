@@ -20,8 +20,6 @@ name: Sync with upstream
 # 触发：
 #   - 每天 UTC 16:00（= 北京时间 00:00）自动跑一次（每晚一次，覆盖全部分支）；
 #   - 也可以手动 Run workflow（同样覆盖全部分支）。
-#   - 当 feat/ios-integration 同步成功后，继续触发 iOS Nightly 工作流：
-#     构建 IPA → 更新 nightly 预发布 → 通过局域网 Runner 部署到 iPad。
 #
 # 实现在服务端完成，不需要把仓库拉下来：
 #   - 比较：GET /repos/{fork}/compare/main...{upstream-owner}:main
@@ -78,12 +76,6 @@ on:
     # cron 一律使用 UTC。中国没有夏令时，UTC 16:00 恒等于北京时间次日 00:00。
     - cron: "0 16 * * *"
   workflow_dispatch:
-    inputs:
-      run_ios_nightly:
-        description: Build, publish, and deploy the iOS nightly after synchronization
-        type: boolean
-        required: false
-        default: true
 
 permissions:
   contents: read # 枚举分支只需读权限；写权限下放到 sync 任务
@@ -128,7 +120,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write # merge-upstream 需要写权限
-      actions: write # 同步完成后需要触发 iOS 构建工作流
 
     # 每个分支一个独立任务，互不影响（fail-fast=false 让单个分支失败不牵连其它）
     strategy:
@@ -326,32 +317,3 @@ jobs:
             echo "> 手动同步等价操作：在 Fork 页面点 **Sync fork**，或本地 \`git fetch upstream && git merge upstream/main\`。"
             echo "> 若失败原因是「无权修改工作流文件」，需要配一个有 workflow 权限的 \`SYNC_TOKEN\`（见本文件顶部注释）。"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Trigger iOS nightly build, release, and deployment
-        if: >-
-          success() &&
-          matrix.branch == 'feat/ios-integration' &&
-          (github.event_name == 'schedule' || inputs.run_ios_nightly)
-        shell: bash
-        env:
-          FORK: ${{ github.repository }}
-          # workflow_dispatch is explicitly allowed as a GITHUB_TOKEN-triggered event.
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          echo "触发 feat/ios-integration 的 Nightly 构建与 iPad 部署"
-          gh workflow run ios-test-build.yml \
-            --repo "$FORK" \
-            --ref feat/ios-integration \
-            -f publish_nightly=true \
-            -f deploy_to_ipad=true
-
-          sleep 3
-          gh run list \
-            --repo "$FORK" \
-            --workflow ios-test-build.yml \
-            --branch feat/ios-integration \
-            --event workflow_dispatch \
-            --limit 1 \
-            --json databaseId,url,status,createdAt \
-            | tee "$RUNNER_TEMP/nightly-ios-run.json"
