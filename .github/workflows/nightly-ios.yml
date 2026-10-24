@@ -293,7 +293,7 @@ jobs:
       NONAME_ALIVE_TIMEOUT: "2"
     steps:
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@56b1f78af6cfa33575554fb9ff167a5b5d18fa8b
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@2dca676d3f9b7a2a3c976af04cd50cb0127e6ede
         with:
           artifact-run-id: ${{ github.run_id }}
           artifact-name: ${{ needs.build-ios.outputs.artifact_name }}
