@@ -202,6 +202,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # 该作业没有 actions/checkout，gh release 默认要从本地 git 仓库推断仓库名，
+          # 没有 GH_REPO 时会直接报 "fatal: not a git repository"。
+          GH_REPO: ${{ github.repository }}
           SOURCE_SHA: ${{ needs.verify-sync.outputs.source_sha }}
           ARTIFACT_NAME: ${{ needs.build-ios.outputs.artifact_name }}
           IPA_VERSION: ${{ needs.build-ios.outputs.ipa_version }}
