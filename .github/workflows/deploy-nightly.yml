@@ -1,0 +1,69 @@
+name: Deploy nightly IPA to iPad
+
+# 只跑部署、不重新构建：从 nightly Release 下载现成的 IPA，
+# 通过局域网 runner 推到 iPad。用于验证部署链路或重试夜间部署。
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag that holds the IPA
+        type: string
+        required: true
+        default: nightly
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: deploy-nightly-ipad
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy nightly IPA to iPad
+    runs-on: [self-hosted, Linux, noname-ios-deploy]
+    timeout-minutes: 45
+    env:
+      HTTP_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+      HTTPS_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+      NONAME_IOS_PASSCODE: ${{ secrets.NONAME_IOS_PASSCODE }}
+      NONAME_LOCK_DURING_DEPLOY: "1"
+      NONAME_KEEP_AWAKE: "1"
+      NONAME_MAX_RECOVERIES: "2"
+      NONAME_ALIVE_TIMEOUT: "2"
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download nightly IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/nightly"
+          gh release download "${{ inputs.release_tag }}" \
+            --pattern '*.ipa' \
+            --dir "$GITHUB_WORKSPACE/nightly" \
+            --clobber
+          ipa_path="$(find "$GITHUB_WORKSPACE/nightly" -maxdepth 1 -type f -name '*.ipa' -print -quit)"
+          [[ -n "$ipa_path" ]]
+          echo "NONAME_IPA_PATH=${ipa_path}" >> "$GITHUB_ENV"
+          echo "Using ${ipa_path}"
+
+      - name: Deploy through LiveContainer built-in SideStore
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@f3a2ebf143ed386f48e6b6ad1fbedc839d403fa3
+        with:
+          ipa-path: ${{ env.NONAME_IPA_PATH }}
+          device-id: ${{ secrets.NONAME_IOS_DEVICE_ID }}
+          host: ${{ secrets.NONAME_IOS_HOST }}
+
+      - name: Record result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## iPad deployment ${{ job.status }}"
+            echo ""
+            echo "This run reused the IPA from the \`${{ inputs.release_tag }}\` release."
+            echo "The installer removes the existing app container before reinstalling."
+          } >> "$GITHUB_STEP_SUMMARY"
