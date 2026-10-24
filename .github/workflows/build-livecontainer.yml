@@ -7,12 +7,12 @@ on:
         description: LiveContainer branch, tag, or commit
         type: string
         required: true
-        default: noname-deploy
+        default: noname-screen-off
       sidestore_ref:
         description: SideStore branch, tag, or commit
         type: string
         required: true
-        default: LiveContainerSupport
+        default: feat/noname-screen-off-deploy
 
 permissions:
   contents: read
