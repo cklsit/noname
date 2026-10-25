@@ -13,6 +13,8 @@ jobs:
   lint:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.base_ref || 'main' }}
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +46,7 @@ jobs:
       - name: Fetch base branch (shallow)
         # 本步骤无需额外处理：blob:none 是写在 remote 配置里的，会被这次 fetch 继承，
         # 因此拉取 base 分支时也不会把素材 blob 拉下来。
-        run: git fetch --no-tags --depth=1 origin ${{ github.base_ref }}:${{ github.base_ref }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_REF:$BASE_REF"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
@@ -62,4 +64,4 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts --prefer-offline
 
       - name: Run ${{ matrix.name }}
-        run: pnpm --filter "...[${{ github.base_ref }}]" --filter "!./" run --if-present ${{ matrix.script }}
+        run: pnpm --filter "...[$BASE_REF]" --filter "!./" run --if-present ${{ matrix.script }}
