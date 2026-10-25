@@ -83,7 +83,7 @@ jobs:
           PY
 
       - name: Deploy through LiveContainer built-in SideStore
-        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@aa37a885c14325cba268cfded0ec152c6508ebd6
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@e9beadc86600befa38641ce43d2cbc2158fe87a4
         with:
           ipa-path: ${{ env.NONAME_IPA_PATH }}
           device-id: ${{ secrets.NONAME_IOS_DEVICE_ID }}
