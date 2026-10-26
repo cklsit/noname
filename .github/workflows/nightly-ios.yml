@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       source_sha: ${{ steps.verify.outputs.source_sha }}
+      source_branch: ${{ steps.verify.outputs.source_branch }}
     env:
       GH_TOKEN: ${{ github.token }}
       BRANCH: feat/ios-integration
@@ -32,20 +33,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Build exactly what upstream has right now. Resolving the SHA from
-          # libnoname/noname avoids depending on the 00:00 mirror job: upstream
-          # moves during the day, and a stale or diverged fork branch used to
-          # abort the whole nightly run.
-          source_sha="$(gh api "repos/${UPSTREAM_OWNER}/${UPSTREAM_REPO}/git/ref/heads/${BRANCH}" --jq '.object.sha')"
+          # Build exactly what upstream has right now. Upstream merged the iOS
+          # work into main and deleted feat/ios-integration, so prefer the
+          # dedicated branch while it exists and fall back to main otherwise.
+          source_sha=""
+          source_branch=""
+          for candidate in "${BRANCH}" main; do
+            if sha="$(gh api "repos/${UPSTREAM_OWNER}/${UPSTREAM_REPO}/git/ref/heads/${candidate}" --jq '.object.sha' 2>/dev/null)"; then
+              source_sha="$sha"
+              source_branch="$candidate"
+              break
+            fi
+          done
           if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Could not resolve the head of ${UPSTREAM_OWNER}/${UPSTREAM_REPO}:${BRANCH}"
+            echo "::error::Could not resolve ${UPSTREAM_OWNER}/${UPSTREAM_REPO}:${BRANCH} or main"
             exit 1
           fi
           echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          echo "source_branch=${source_branch}" >> "$GITHUB_OUTPUT"
           {
             echo "## Nightly source"
             echo ""
-            echo "- Upstream: \`${UPSTREAM_OWNER}/${UPSTREAM_REPO}:${BRANCH}\`"
+            echo "- Upstream: \`${UPSTREAM_OWNER}/${UPSTREAM_REPO}:${source_branch}\`"
             echo "- Commit: \`${source_sha}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -206,7 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${SOURCE_SHA:-}" ]]; then
-            SOURCE_SHA="$(gh api "repos/libnoname/noname/git/ref/heads/${BRANCH:-feat/ios-integration}" --jq '.object.sha')"
+            SOURCE_SHA="$(gh api "repos/libnoname/noname/git/ref/heads/main" --jq '.object.sha')"
           fi
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::source SHA is unavailable"; exit 1; }
           [[ "$TAG_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::tag SHA is unavailable"; exit 1; }
