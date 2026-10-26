@@ -99,8 +99,11 @@ jobs:
         run: |
           set -euo pipefail
           all=$(gh api "repos/$FORK/branches?per_page=100" --paginate --jq '.[].name' | sort)
+          # 已废弃的实验分支：各自带着与上游同文件冲突的自定义提交，合并必 409。
+          # 分支本身保留（历史可查），只是不再尝试自动同步，避免每晚把整轮运行标红。
+          STALE='^(feat/ios-auto-deploy|feat/ios-auto-deploy-clean|feat/ios-integration|feat/nightly-screen-off|feat/nightly-background-passcode|fix/nightly-source-output|fix/nightly-merged-pins|perf/ios-optimization|perf/p0-hardening|feat/web-pages)$'
           names=$(printf '%s\n' "$all" | grep -v -x 'build-output' | grep -v '^backup/' \
-            | grep -vE '^feat/#(3531|3537)-' || true)
+            | grep -vE '^feat/#(3531|3537)-' | grep -vE "$STALE" || true)
           if [ -z "$names" ]; then
             echo "::error::未枚举到任何可同步分支（异常，请检查）"
             exit 1
