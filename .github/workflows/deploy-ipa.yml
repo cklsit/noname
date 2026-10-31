@@ -38,24 +38,10 @@ jobs:
           set -euo pipefail
           rm -rf ipa ipa.zip
           mkdir -p ipa
-
           api="https://api.github.com/repos/${GH_REPO}/actions/runs/${NONAME_RUN_ID}/artifacts"
-          url=$(curl -fsSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "$api" | "${NONAME_DEPLOY_PYTHON:-python3}" -c 'import json,sys
-arts = json.load(sys.stdin)["artifacts"]
-a = next((x for x in arts if x["name"].startswith("noname-")), None)
-if a is None:
-    raise SystemExit("no noname-* artifact on this run")
-print(a["archive_download_url"])')
-
+          url=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api" | "${NONAME_DEPLOY_PYTHON:-python3}" -c 'import json,sys; a=next((x for x in json.load(sys.stdin)["artifacts"] if x["name"].startswith("noname-")), None); print(a["archive_download_url"] if a else sys.exit("no artifact"))')
           curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -o ipa.zip "$url"
-          "${NONAME_DEPLOY_PYTHON:-python3}" - <<'PY'
-          import zipfile
-          zipfile.ZipFile("ipa.zip").extractall("ipa")
-          PY
-
+          "${NONAME_DEPLOY_PYTHON:-python3}" -c 'import zipfile; zipfile.ZipFile("ipa.zip").extractall("ipa")'
           ipa=$(find ipa -name '*.ipa' -print -quit)
           if [ -z "$ipa" ]; then
             echo "no .ipa inside the downloaded artifact" >&2
