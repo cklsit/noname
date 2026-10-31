@@ -1,0 +1,98 @@
+name: Deploy IPA to iPad
+
+# Reusable workflow: download the IPA artifact of a finished build run and install
+# it to the iPad through the self-hosted runner (LiveContainer built-in SideStore).
+
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        description: Actions run id that holds the IPA artifact
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    name: Deploy IPA to iPad
+    runs-on: [self-hosted, Linux, noname-ios-deploy]
+    timeout-minutes: 45
+    env:
+      HTTP_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+      HTTPS_PROXY: ${{ secrets.NONAME_HTTPS_PROXY }}
+      NONAME_IOS_PASSCODE: ${{ secrets.NONAME_IOS_PASSCODE }}
+      NONAME_LOCK_DURING_DEPLOY: "1"
+      NONAME_KEEP_AWAKE: "1"
+      NONAME_MAX_RECOVERIES: "2"
+      NONAME_ALIVE_TIMEOUT: "2"
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      NONAME_RUN_ID: ${{ inputs.run_id }}
+    steps:
+      - name: Download IPA from build run
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${NONAME_DEPLOY_PYTHON:-python3}" - <<'PY'
+          import io
+          import json
+          import os
+          import pathlib
+          import urllib.request
+          import zipfile
+
+          repository = os.environ["GH_REPO"]
+          run_id = os.environ["NONAME_RUN_ID"]
+          token = os.environ["GH_TOKEN"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "User-Agent": "noname-deploy-ipa",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def fetch(url: str, accept: str = "application/vnd.github+json") -> bytes:
+              request_headers = dict(headers)
+              request_headers["Accept"] = accept
+              request = urllib.request.Request(url, headers=request_headers)
+              with urllib.request.urlopen(request, timeout=600) as response:
+                  return response.read()
+
+          artifacts = json.loads(fetch(f"https://api.github.com/repos/{repository}/actions/runs/{run_id}/artifacts"))["artifacts"]
+          artifact = next((item for item in artifacts if item["name"].startswith("noname-")), None)
+          if artifact is None:
+              raise SystemExit("no noname-* artifact on this run")
+
+          archive = fetch(artifact["archive_download_url"], "application/octet-stream")
+          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "ipa"
+          workspace.mkdir(parents=True, exist_ok=True)
+          zipfile.ZipFile(io.BytesIO(archive)).extractall(workspace)
+
+          ipa = next(workspace.rglob("*.ipa"), None)
+          if ipa is None:
+              raise SystemExit("no .ipa inside the artifact")
+          print(f"downloaded {ipa} ({ipa.stat().st_size} bytes)")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"NONAME_IPA_PATH={ipa}\n")
+          PY
+
+      - name: Deploy through LiveContainer built-in SideStore
+        uses: cklsit/LiveContainer/.github/actions/noname-ios-deploy@b32edc9c4f7fb2758a255e83b56b2bab86232bef
+        with:
+          ipa-path: ${{ env.NONAME_IPA_PATH }}
+          device-id: ${{ secrets.NONAME_IOS_DEVICE_ID }}
+          host: ${{ secrets.NONAME_IOS_HOST }}
+
+      - name: Record result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## iPad deployment ${{ job.status }}"
+            echo ""
+            echo "IPA source: run \`${{ inputs.run_id }}\` (artifact \`noname-*\`)."
+            echo "The installer removes the existing app container before reinstalling."
+          } >> "$GITHUB_STEP_SUMMARY"
