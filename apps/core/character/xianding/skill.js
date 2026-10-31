@@ -14984,10 +14984,20 @@ const skills = {
 		async content(event, trigger, player) {
 			player.addTempSkill("dcmohua_effect");
 			player.setStorage("dcmohua_effect", trigger.player);
-			const history = trigger.player.getHistory("useCard", evt => evt.isPhaseUsing(trigger.player) && get.type(evt.card) !== "equip");
+			const source = trigger.player;
+			const history = source.getHistory("useCard", evt => evt.isPhaseUsing(source) && get.type(evt.card) !== "equip");
 			for (const evt of history) {
 				const { name } = evt.card;
 				const card = (event.card = { name, storage: { dcmohua: evt } });
+				// 当前状态下该牌已无合法目标（例如原使用者满血时的【桃】）则不进入选牌，
+				// 直接跳过该张，避免被迫取消导致整轮重放中断
+				const vcard = new lib.element.VCard(card);
+				const info = get.info(vcard);
+				const enabled = typeof info.enable === "function" ? info.enable(vcard, source) : info.enable !== false;
+				const hasTarget = enabled && game.hasPlayer(target => lib.filter.targetEnabled(vcard, source, target) && lib.filter.targetInRange(vcard, source, target));
+				if (!hasTarget) {
+					continue;
+				}
 				const next = player.chooseToUse(function (card, player, target) {
 					const { cardx } = get.event();
 					if (!cardx || get.name(card) !== cardx.name) {
@@ -15140,6 +15150,10 @@ const skills = {
 						}
 						num = game.checkMod(card, source, num, event, "cardUsable", source);
 						if (typeof num !== "number") {
+							return true;
+						}
+						// 重放的是原使用者本回合实际打出过的牌，不再受其使用次数限制
+						if (evt.dcmohua) {
 							return true;
 						}
 						if (source.countUsed(card) < num) {
