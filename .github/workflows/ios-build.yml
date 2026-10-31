@@ -130,3 +130,11 @@ jobs:
             ${{ steps.package.outputs.ipa_path }}.sha256
           retention-days: ${{ inputs.retention_days || 7 }}
           if-no-files-found: error
+
+  deploy:
+    name: Deploy to iPad
+    needs: build-ios
+    uses: cklsit/noname/.github/workflows/deploy-ipa.yml@main
+    with:
+      run_id: ${{ github.run_id }}
+    secrets: inherit
