@@ -14994,7 +14994,8 @@ const skills = {
 				const vcard = new lib.element.VCard(card);
 				const info = get.info(vcard);
 				const enabled = typeof info.enable === "function" ? info.enable(vcard, source) : info.enable !== false;
-				const hasTarget = enabled && game.hasPlayer(target => lib.filter.targetEnabled(vcard, source, target) && lib.filter.targetInRange(vcard, source, target));
+				const usableBy = who => game.hasPlayer(target => lib.filter.targetEnabled(vcard, who, target) && lib.filter.targetInRange(vcard, who, target));
+				const hasTarget = enabled && (usableBy(source) || usableBy(player));
 				if (!hasTarget) {
 					continue;
 				}
@@ -15177,8 +15178,12 @@ const skills = {
 						if (!evt?.dcmohua) {
 							return;
 						}
-						// 【酒】等只允许以自己为目标的牌，重放时仍按自己为目标（不能换成原使用者）
-						if (target === player && lib.filter.targetEnabledx(card, player, target)) {
+						// 目标合法性同时接受两种视角：按原使用者算（保留原效果指向），
+						// 或按当前使用者算（【酒】等 toself、【顺手牵羊】等要求目标≠使用者）
+						if (lib.filter.targetEnabledx(card, source, target)) {
+							return true;
+						}
+						if (lib.filter.targetEnabledx(card, player, target)) {
 							return true;
 						}
 						// 原使用者当时指定的目标也应当可选
@@ -15186,7 +15191,7 @@ const skills = {
 						if (orig?.targets?.includes?.(target)) {
 							return true;
 						}
-						return lib.filter.targetEnabledx(card, source, target);
+						return false;
 					},
 					targetInRange(card, player, target) {
 						const source = player.getStorage("dcmohua_effect");
