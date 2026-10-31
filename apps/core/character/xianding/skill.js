@@ -15177,6 +15177,15 @@ const skills = {
 						if (!evt?.dcmohua) {
 							return;
 						}
+						// 【酒】等只允许以自己为目标的牌，重放时仍按自己为目标（不能换成原使用者）
+						if (target === player && lib.filter.targetEnabledx(card, player, target)) {
+							return true;
+						}
+						// 原使用者当时指定的目标也应当可选
+						const orig = evt.card?.storage?.dcmohua;
+						if (orig?.targets?.includes?.(target)) {
+							return true;
+						}
 						return lib.filter.targetEnabledx(card, source, target);
 					},
 					targetInRange(card, player, target) {
