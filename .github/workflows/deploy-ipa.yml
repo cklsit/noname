@@ -51,7 +51,10 @@ if a is None:
 print(a["archive_download_url"])')
 
           curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -o ipa.zip "$url"
-          unzip -q ipa.zip -d ipa
+          "${NONAME_DEPLOY_PYTHON:-python3}" - <<'PY'
+          import zipfile
+          zipfile.ZipFile("ipa.zip").extractall("ipa")
+          PY
 
           ipa=$(find ipa -name '*.ipa' -print -quit)
           if [ -z "$ipa" ]; then
