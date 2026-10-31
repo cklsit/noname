@@ -14987,33 +14987,17 @@ const skills = {
 			const source = trigger.player;
 			const history = source.getHistory("useCard", evt => evt.isPhaseUsing(source) && get.type(evt.card) !== "equip");
 			for (const evt of history) {
-				const { name } = evt.card;
-				const card = (event.card = { name, storage: { dcmohua: evt } });
-				// 当前状态下该牌已无合法目标（例如原使用者满血时的【桃】）则不进入选牌，
-				// 直接跳过该张，避免被迫取消导致整轮重放中断
-				const vcard = new lib.element.VCard(card);
-				const info = get.info(vcard);
-				const enabled = typeof info.enable === "function" ? info.enable(vcard, source) : info.enable !== false;
-				const usableBy = who => game.hasPlayer(target => lib.filter.targetEnabled(vcard, who, target) && lib.filter.targetInRange(vcard, who, target));
-				const hasTarget = enabled && (usableBy(source) || usableBy(player));
-				if (!hasTarget) {
-					continue;
-				}
-				const next = player.chooseToUse(function (card, player, target) {
-					const { cardx } = get.event();
-					if (!cardx || get.name(card) !== cardx.name) {
-						return false;
-					}
-					return lib.filter.filterCard.apply(this, arguments);
-				});
-				next.set("dcmohua", true);
-				next.set("manualConfirm", true);
-				next.set("openskilldialog", `${get.translation(event.name)}：请选择【${get.translation(card.name)}】的目标`);
-				next.set("cardx", card);
-				const result = await next.forResult();
-				if (!result?.bool) {
+				if (!source.isIn()) {
 					break;
 				}
+				// 按原局目标直接重放，不再要求重新选目标：
+				// 原目标均离场则跳过该张，无目标牌以原使用者自身作为唯一目标
+				const targets = (evt.targets || []).filter(target => target?.isIn?.());
+				if (evt.targets?.length && !targets.length) {
+					continue;
+				}
+				const card = new lib.element.VCard({ name: evt.card.name, storage: { dcmohua: evt } });
+				await source.useCard({ card, targets: targets.length ? targets : [source] });
 			}
 			player.removeSkill("dcmohua_effect");
 		},
@@ -15153,10 +15137,6 @@ const skills = {
 						if (typeof num !== "number") {
 							return true;
 						}
-						// 重放的是原使用者本回合实际打出过的牌，不再受其使用次数限制
-						if (evt.dcmohua) {
-							return true;
-						}
 						if (source.countUsed(card) < num) {
 							return true;
 						}
@@ -15178,20 +15158,7 @@ const skills = {
 						if (!evt?.dcmohua) {
 							return;
 						}
-						// 目标合法性同时接受两种视角：按原使用者算（保留原效果指向），
-						// 或按当前使用者算（【酒】等 toself、【顺手牵羊】等要求目标≠使用者）
-						if (lib.filter.targetEnabledx(card, source, target)) {
-							return true;
-						}
-						if (lib.filter.targetEnabledx(card, player, target)) {
-							return true;
-						}
-						// 原使用者当时指定的目标也应当可选
-						const orig = evt.card?.storage?.dcmohua;
-						if (orig?.targets?.includes?.(target)) {
-							return true;
-						}
-						return false;
+						return lib.filter.targetEnabledx(card, source, target);
 					},
 					targetInRange(card, player, target) {
 						const source = player.getStorage("dcmohua_effect");
