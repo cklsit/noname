@@ -2,7 +2,7 @@ name: Lint Check
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, next]
 
 # 并发控制：同一 PR 连续推送时，旧运行已无意义，直接取消，省下 runner 时间。
 concurrency:
